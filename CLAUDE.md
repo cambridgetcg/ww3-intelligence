@@ -8,8 +8,9 @@ projections. A constrained local Claude transformation remains an explicit,
 optional derived layer.
 
 It does not establish truth, corroborate a source, infer risk in the projection
-layer, infer power or intent from mentions, provide a universal prompt-injection
-sandbox, or deploy a service.
+layer, infer power or intent from mentions, or provide a universal
+prompt-injection sandbox. The optional Fly runtime hosts the collection-only
+watcher and dashboard; it does not host model analysis or RhetorLint.
 
 ## Runtime layers
 
@@ -127,6 +128,9 @@ changes materially.
 - `spec/assessment.schema.json` — portable `ww3.assessment/v1` shape
 - `cli/feed.py` — optional observation-first terminal feed
 - `dashboard/app.py` — optional observation-first dashboard
+- `core/collector.py` — headless collection-only watcher shared by local/hosted UI paths
+- `ops/fly_runtime.py` — single-Machine dashboard/collector supervisor
+- `fly.toml` / `Dockerfile` — lightweight Fly deployment with persistent SQLite
 
 ## Commands
 
@@ -208,5 +212,6 @@ without explicit scope.
 - Historical Events may lack Observation lineage; existing failed runs remain
   historical and collection does not retry them.
 - GitHub Pages deploys documentation and copied portable JSON artifacts only.
-  No hosted collector, dashboard, database, feed worker, RhetorLint process, or
-  background-service configuration is present.
+  The separate Fly runtime hosts the dashboard, SQLite volume, and collection
+  watcher, but no RhetorLint process or model-derived analysis. Its single
+  Machine/volume topology is not high availability.

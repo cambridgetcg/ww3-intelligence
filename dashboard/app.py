@@ -6,8 +6,18 @@ import pandas as pd
 
 st.set_page_config(page_title="WW3 Observation Framework", layout="wide", page_icon="🌍")
 
-from core.db import init_db
-init_db()
+from core.db import database, init_db
+
+
+@st.cache_resource(show_spinner=False)
+def _initialize_database():
+    """Run schema/integrity startup once per dashboard process."""
+    init_db()
+    database.close()
+    return True
+
+
+_initialize_database()
 
 
 def _event_lineage(event):

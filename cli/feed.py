@@ -21,17 +21,18 @@ from rich.table import Table
 from rich.text import Text
 
 from cli.rendering import terminal_line, terminal_text
+from core import collector as headless_collector
 from core.db import AnalysisRun, Observation, database, init_db
 from core.projections import project_observation
 
 
 MAX_CARDS = 20
 POLL_INTERVAL = 2.0
-USGS_INTERVAL = 300
-NEWS_INTERVAL = 600
-GDACS_INTERVAL = 900
-WATCH_NEWS_LIMIT = 200
-WATCH_GDACS_LIMIT = 50
+USGS_INTERVAL = headless_collector.USGS_INTERVAL
+NEWS_INTERVAL = headless_collector.NEWS_INTERVAL
+GDACS_INTERVAL = headless_collector.GDACS_INTERVAL
+WATCH_NEWS_LIMIT = headless_collector.WATCH_NEWS_LIMIT
+WATCH_GDACS_LIMIT = headless_collector.WATCH_GDACS_LIMIT
 
 
 def _latest_analysis_status(observation: Observation) -> str:
@@ -168,9 +169,7 @@ def observation_watcher_thread(
 
 def _process_collected_leaves(leaves: list) -> None:
     """Capture one batch without importing or entering model analysis."""
-    from core.collection import collect_batch
-
-    collect_batch(leaves)
+    headless_collector.process_collected_leaves(leaves)
 
 
 def ingest_thread_usgs(
@@ -178,18 +177,11 @@ def ingest_thread_usgs(
     interval: int = USGS_INTERVAL,
 ) -> None:
     """Collect one bounded USGS batch per interval."""
-    from ingestion.seismic_feed import fetch_seismic_events
-
-    database.connect(reuse_if_open=True)
-    try:
-        while not stop.is_set():
-            try:
-                _process_collected_leaves(fetch_seismic_events())
-            except Exception as exc:
-                print(f"[collect_thread_usgs] failed ({type(exc).__name__}).", file=sys.stderr)
-            stop.wait(interval)
-    finally:
-        database.close()
+    headless_collector.ingest_thread_usgs(
+        stop,
+        interval=interval,
+        processor=_process_collected_leaves,
+    )
 
 
 def ingest_thread_news(
@@ -197,21 +189,11 @@ def ingest_thread_news(
     interval: int = NEWS_INTERVAL,
 ) -> None:
     """Collect bounded RSS batches sequentially per interval."""
-    from ingestion.news_feed import iter_feed_batches
-
-    database.connect(reuse_if_open=True)
-    try:
-        while not stop.is_set():
-            try:
-                for _, leaves in iter_feed_batches(total_limit=WATCH_NEWS_LIMIT):
-                    if stop.is_set():
-                        break
-                    _process_collected_leaves(leaves)
-            except Exception as exc:
-                print(f"[collect_thread_news] failed ({type(exc).__name__}).", file=sys.stderr)
-            stop.wait(interval)
-    finally:
-        database.close()
+    headless_collector.ingest_thread_news(
+        stop,
+        interval=interval,
+        processor=_process_collected_leaves,
+    )
 
 
 def ingest_thread_gdacs(
@@ -219,21 +201,11 @@ def ingest_thread_gdacs(
     interval: int = GDACS_INTERVAL,
 ) -> None:
     """Collect one bounded GDACS alert batch per interval."""
-    from ingestion.gdacs_feed import fetch_gdacs_events
-
-    database.connect(reuse_if_open=True)
-    try:
-        while not stop.is_set():
-            try:
-                _process_collected_leaves(fetch_gdacs_events(limit=WATCH_GDACS_LIMIT))
-            except Exception as exc:
-                print(
-                    f"[collect_thread_gdacs] failed ({type(exc).__name__}).",
-                    file=sys.stderr,
-                )
-            stop.wait(interval)
-    finally:
-        database.close()
+    headless_collector.ingest_thread_gdacs(
+        stop,
+        interval=interval,
+        processor=_process_collected_leaves,
+    )
 
 
 def run_feed(watch: bool = False) -> None:

@@ -290,6 +290,35 @@ observations, RhetorLint process, dashboard, or model-derived analysis.
 `.github/workflows/pages.yml` performs that bounded deployment after pushes to
 `main`. `.github/workflows/ci.yml` runs the isolated test suite separately.
 
+## Hosted prototype
+
+The live observation dashboard is at
+<https://ww3-intelligence.fly.dev/>.
+
+The checked-in Fly configuration runs one always-on, 512 MiB shared-CPU Machine
+in London with one encrypted 1 GiB volume mounted at `/data`. A small supervisor
+performs the SQLite schema/integrity preflight, then runs the Streamlit dashboard
+and the collection-only USGS/RSS/GDACS watcher on that same Machine so both use
+the canonical `/data/ww3.db` ledger. Source fetches remain parallel while ledger
+writes are serialized.
+
+```bash
+fly apps create ww3-intelligence --org personal --yes
+fly volumes create ww3_data --app ww3-intelligence --region lhr --size 1 --yes
+fly deploy --ha=false --remote-only --yes
+```
+
+The hosted runtime fixes `WW3_DISABLE_LLM=1`. It does not provide or execute a
+Claude model path, RhetorLint engine, assessment author, or automatic
+truth/corroboration/power/intent inference. Its Streamlit health path proves
+web-process liveness. The supervisor separately requires the `/data` mount,
+checks free space, fails startup if SQLite cannot initialize/pass integrity, and
+stops the Machine if every collection group becomes stale. These checks are not
+an alerting service or a universal availability guarantee. Runtime processes
+drop root privileges after preparing the mounted volume. One Machine and one
+local volume are a lightweight prototype, not high availability or a complete
+backup strategy.
+
 ## Evidence and capability limits
 
 The ordinary collection/projection command path guarantees that framework code
