@@ -1,0 +1,6 @@
+-r requirements-dashboard.txt
+-r requirements-tui.txt
+
+pytest>=8,<10
+pytest-mock>=3.14,<4
+requests-mock>=1.11,<2

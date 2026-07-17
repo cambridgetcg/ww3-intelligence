@@ -1,0 +1,5 @@
+click>=8.1,<9
+peewee>=3.17,<5
+requests>=2.31,<3
+feedparser>=6.0.11,<7
+python-dotenv>=1,<2

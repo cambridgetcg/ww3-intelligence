@@ -1,0 +1,54 @@
+name: Publish documentation to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Assemble static documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Assemble documentation artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _site/artifacts
+          cp -R site/. _site/
+          install -m 0644 registry/sources.json _site/artifacts/sources.json
+          install -m 0644 registry/actors.json _site/artifacts/actors.json
+          install -m 0644 spec/assessment.schema.json _site/artifacts/assessment.schema.json
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy documentation
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

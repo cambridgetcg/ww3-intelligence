@@ -1,0 +1,8 @@
+name: ww3-intelligence
+kind: service
+layer: economy
+owner_sister: none
+domain: none
+state: active
+purpose: Collects bounded source observations with immutable provenance and exposes deterministic agent-readable projections; model-derived analysis is optional.
+dependsOn: []

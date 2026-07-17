@@ -1,0 +1,30 @@
+{
+  "contract": "ww3.actors/v1",
+  "actors": [
+    {"actor_id":"state:us","canonical_name":"United States","kind":"state","aliases":[{"text":"United States","case_sensitive":false},{"text":"U.S.","case_sensitive":false}]},
+    {"actor_id":"state:china","canonical_name":"China","kind":"state","aliases":[{"text":"China","case_sensitive":false},{"text":"People's Republic of China","case_sensitive":false},{"text":"Chinese government","case_sensitive":false}]},
+    {"actor_id":"state:russia","canonical_name":"Russia","kind":"state","aliases":[{"text":"Russia","case_sensitive":false},{"text":"Russian Federation","case_sensitive":false},{"text":"Russian government","case_sensitive":false}]},
+    {"actor_id":"org:eu","canonical_name":"European Union","kind":"international-organization","aliases":[{"text":"European Union","case_sensitive":false},{"text":"EU","case_sensitive":true}]},
+    {"actor_id":"state:uk","canonical_name":"United Kingdom","kind":"state","aliases":[{"text":"United Kingdom","case_sensitive":false},{"text":"UK","case_sensitive":true},{"text":"British government","case_sensitive":false}]},
+    {"actor_id":"state:france","canonical_name":"France","kind":"state","aliases":[{"text":"France","case_sensitive":false},{"text":"French government","case_sensitive":false}]},
+    {"actor_id":"state:germany","canonical_name":"Germany","kind":"state","aliases":[{"text":"Germany","case_sensitive":false},{"text":"German government","case_sensitive":false}]},
+    {"actor_id":"state:india","canonical_name":"India","kind":"state","aliases":[{"text":"India","case_sensitive":false},{"text":"Indian government","case_sensitive":false}]},
+    {"actor_id":"state:iran","canonical_name":"Iran","kind":"state","aliases":[{"text":"Iran","case_sensitive":false},{"text":"Iranian government","case_sensitive":false}]},
+    {"actor_id":"state:israel","canonical_name":"Israel","kind":"state","aliases":[{"text":"Israel","case_sensitive":false},{"text":"Israeli government","case_sensitive":false}]},
+    {"actor_id":"state:ukraine","canonical_name":"Ukraine","kind":"state","aliases":[{"text":"Ukraine","case_sensitive":false},{"text":"Ukrainian government","case_sensitive":false}]},
+    {"actor_id":"state:turkey","canonical_name":"Türkiye","kind":"state","aliases":[{"text":"Türkiye","case_sensitive":false},{"text":"Turkey","case_sensitive":false},{"text":"Turkish government","case_sensitive":false}]},
+    {"actor_id":"state:saudi-arabia","canonical_name":"Saudi Arabia","kind":"state","aliases":[{"text":"Saudi Arabia","case_sensitive":false},{"text":"Saudi government","case_sensitive":false}]},
+    {"actor_id":"state:japan","canonical_name":"Japan","kind":"state","aliases":[{"text":"Japan","case_sensitive":false},{"text":"Japanese government","case_sensitive":false}]},
+    {"actor_id":"state:north-korea","canonical_name":"North Korea","kind":"state","aliases":[{"text":"North Korea","case_sensitive":false},{"text":"DPRK","case_sensitive":true}]},
+    {"actor_id":"org:un","canonical_name":"United Nations","kind":"international-organization","aliases":[{"text":"United Nations","case_sensitive":false},{"text":"UN","case_sensitive":true}]},
+    {"actor_id":"org:nato","canonical_name":"NATO","kind":"alliance","aliases":[{"text":"NATO","case_sensitive":true},{"text":"North Atlantic Treaty Organization","case_sensitive":false}]},
+    {"actor_id":"org:iaea","canonical_name":"International Atomic Energy Agency","kind":"international-organization","aliases":[{"text":"IAEA","case_sensitive":true},{"text":"International Atomic Energy Agency","case_sensitive":false}]},
+    {"actor_id":"org:usgs","canonical_name":"United States Geological Survey","kind":"government-body","aliases":[{"text":"USGS","case_sensitive":true},{"text":"United States Geological Survey","case_sensitive":false}]},
+    {"actor_id":"org:bbc-news","canonical_name":"BBC News","kind":"newsroom","aliases":[{"text":"BBC News","case_sensitive":false}]},
+    {"actor_id":"org:al-jazeera","canonical_name":"Al Jazeera","kind":"newsroom","aliases":[{"text":"Al Jazeera","case_sensitive":false}]},
+    {"actor_id":"org:dw","canonical_name":"Deutsche Welle","kind":"newsroom","aliases":[{"text":"Deutsche Welle","case_sensitive":false},{"text":"DW","case_sensitive":true}]},
+    {"actor_id":"org:white-house","canonical_name":"White House","kind":"government-body","aliases":[{"text":"White House","case_sensitive":false}]},
+    {"actor_id":"org:russia-mfa","canonical_name":"Russian Ministry of Foreign Affairs","kind":"government-body","aliases":[{"text":"Russian Ministry of Foreign Affairs","case_sensitive":false},{"text":"Russian Foreign Ministry","case_sensitive":false}]},
+    {"actor_id":"org:gdacs","canonical_name":"Global Disaster Alert and Coordination System","kind":"alert-system","aliases":[{"text":"GDACS","case_sensitive":true},{"text":"Global Disaster Alert and Coordination System","case_sensitive":false}]}
+  ]
+}

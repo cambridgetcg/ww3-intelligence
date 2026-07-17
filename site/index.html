@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="Documentation and portable contracts for the local WW3 Observation Framework."
+    >
+    <meta name="color-scheme" content="dark light">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"
+    >
+    <title>WW3 Observation Framework · Docs &amp; specs</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="site.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <a class="wordmark" href="./" aria-label="WW3 Observation Framework home">
+        <span class="mark" aria-hidden="true">W3</span>
+        <span>Observation Framework</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#method">Method</a>
+        <a href="#contracts">Contracts</a>
+        <a href="#limits">Limits</a>
+        <a href="https://github.com/cambridgetcg/ww3-intelligence">Source</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <p class="eyebrow">Evidence-first · local-first · inspectable</p>
+        <h1 id="hero-title">Keep the source visible.<br>Keep uncertainty intact.</h1>
+        <p class="hero-copy">
+          A compact framework for collecting geopolitical source records and
+          building explicit, reviewable interpretations over them.
+        </p>
+        <div class="notice" role="note">
+          <strong>This Pages site publishes documentation and portable specs only.</strong>
+          Collection, storage, RhetorLint, validation, and optional model work
+          remain local. No feed, database, observation ledger, or analysis
+          service is hosted here.
+        </div>
+        <div class="hero-actions">
+          <a class="button primary" href="#contracts">Explore the contracts</a>
+          <a class="button" href="#limits">Read the boundaries</a>
+        </div>
+      </section>
+
+      <section id="method" class="section" aria-labelledby="method-title">
+        <div class="section-heading">
+          <p class="eyebrow">Method</p>
+          <h2 id="method-title">Separate records from interpretations</h2>
+          <p>
+            Each layer has a deliberately narrow job. The framework preserves
+            exact source material and asks analytical statements to show their
+            evidence and uncertainty.
+          </p>
+        </div>
+
+        <ol class="flow" aria-label="Framework data flow">
+          <li>
+            <span class="step">01</span>
+            <div>
+              <h3>Capture</h3>
+              <p>Store a bounded, immutable Observation with provenance.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step">02</span>
+            <div>
+              <h3>Isolate</h3>
+              <p>Expose exact passages, source context, and visible actor aliases.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step">03</span>
+            <div>
+              <h3>Annotate</h3>
+              <p>Optionally mark visible language patterns with local RhetorLint.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step">04</span>
+            <div>
+              <h3>Assess</h3>
+              <p>Link scoped claims and falsifiable hypotheses to cited passages.</p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section id="contracts" class="section" aria-labelledby="contracts-title">
+        <div class="section-heading">
+          <p class="eyebrow">Published artifacts</p>
+          <h2 id="contracts-title">Small contracts, directly inspectable</h2>
+          <p>
+            These files are copied from the repository during deployment. They
+            describe shapes and identities; none is a live intelligence feed.
+          </p>
+        </div>
+
+        <div class="contract-grid">
+          <article class="contract-card">
+            <div class="contract-meta">
+              <span class="contract-tag">JSON registry</span>
+              <span id="source-count" class="artifact-status" aria-live="polite">Published copy</span>
+            </div>
+            <h3>Source registry</h3>
+            <p>
+              Delivery, publisher/control lineage, roles, authority scope, and
+              caveats. It contains no truth, reliability, or credibility score.
+            </p>
+            <a href="artifacts/sources.json">Open sources.json <span aria-hidden="true">↗</span></a>
+          </article>
+
+          <article class="contract-card">
+            <div class="contract-meta">
+              <span class="contract-tag">JSON registry</span>
+              <span id="actor-count" class="artifact-status" aria-live="polite">Published copy</span>
+            </div>
+            <h3>Actor registry</h3>
+            <p>
+              Canonical names and bounded aliases for visible-text matching. It
+              does not rank power, assign responsibility, or describe motives.
+            </p>
+            <a href="artifacts/actors.json">Open actors.json <span aria-hidden="true">↗</span></a>
+          </article>
+
+          <article class="contract-card accent-card">
+            <div class="contract-meta">
+              <span class="contract-tag">JSON Schema</span>
+              <span id="schema-version" class="artifact-status" aria-live="polite">Draft 2020-12</span>
+            </div>
+            <h3>Assessment schema</h3>
+            <p>
+              A portable shape for passage-linked claims, scoped power bases,
+              alternatives, falsifiers, contradictions, and unknowns.
+            </p>
+            <a href="artifacts/assessment.schema.json">Open assessment schema <span aria-hidden="true">↗</span></a>
+          </article>
+        </div>
+      </section>
+
+      <section id="limits" class="section boundaries" aria-labelledby="limits-title">
+        <div class="section-heading">
+          <p class="eyebrow">Epistemic boundaries</p>
+          <h2 id="limits-title">Validation is structure, not a truth machine</h2>
+          <p>
+            A valid packet can be traced and reviewed. That does not make its
+            contents correct.
+          </p>
+        </div>
+
+        <div class="boundary-grid">
+          <article>
+            <h3>What the framework can preserve</h3>
+            <ul>
+              <li>Exact visible passages and source-record lineage</li>
+              <li>Claimed source ID and canonical-host consistency</li>
+              <li>Bounded, potentially incomplete actor-alias visibility</li>
+              <li>Evidence links, alternatives, limitations, and falsifiers</li>
+            </ul>
+          </article>
+          <article>
+            <h3>What it does not establish</h3>
+            <ul>
+              <li>Truth, deception, source credibility, or authentication</li>
+              <li>Independent corroboration from publisher diversity</li>
+              <li>Power from mention volume or capacity from identity alone</li>
+              <li>Intent from rhetoric, capability, or automated inference</li>
+            </ul>
+          </article>
+        </div>
+
+        <blockquote>
+          Intent belongs here only as a falsifiable, evidence-linked hypothesis
+          with alternatives—not as mind-reading or a confidence score.
+        </blockquote>
+      </section>
+    </main>
+
+    <footer>
+      <p>Documentation/spec surface for the WW3 Observation Framework.</p>
+      <p>Static by design. No tracking, remote fonts, or client-side analytics.</p>
+    </footer>
+  </body>
+</html>

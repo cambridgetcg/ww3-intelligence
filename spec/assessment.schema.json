@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenttool.dev/schemas/ww3-assessment-v1.json",
+  "title": "WW3 evidence-linked situation assessment",
+  "description": "Claims remain attributed; intent is represented only as falsifiable hypotheses with alternatives. Validation does not establish truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "casefile_fingerprint_sha256", "observation_ids", "producer", "claims", "power_bases", "intent_hypotheses", "contradictions", "unknowns"],
+  "properties": {
+    "contract": {"const": "ww3.assessment/v1"},
+    "casefile_fingerprint_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "observation_ids": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"type": "integer", "minimum": 1}},
+    "producer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "name", "version"],
+      "properties": {
+        "kind": {"enum": ["human", "agent", "model"]},
+        "name": {"type": "string", "minLength": 1, "maxLength": 200},
+        "version": {"type": "string", "minLength": 1, "maxLength": 200}
+      }
+    },
+    "claims": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/claim"}},
+    "power_bases": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/powerBasis"}},
+    "intent_hypotheses": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/intent"}},
+    "contradictions": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/contradiction"}},
+    "unknowns": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+    "scope": {"const": "Claims remain attributed representations; power bases are evidence-linked descriptions with relational, geographic, operational, and temporal scope, not scores; intent entries are falsifiable hypotheses, not mind-reading. Publisher attribution requires registry and HTTPS canonical-host consistency, which is not authentication. Capability alone cannot support intent. Power and intent support must be verbatim and visibly name the actor. Validation does not make any entry true."}
+  },
+  "$defs": {
+    "claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claim_id", "observation_id", "passage_id", "span", "actual", "proposition", "representation", "claim_kind", "subject_actor_ids", "attribution"],
+      "properties": {
+        "claim_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "observation_id": {"type": "integer", "minimum": 1},
+        "passage_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "span": {
+          "type": "object", "additionalProperties": false,
+          "required": ["start", "end", "offset_encoding"],
+          "properties": {
+            "start": {"type": "integer", "minimum": 0},
+            "end": {"type": "integer", "minimum": 0},
+            "offset_encoding": {"const": "unicode-code-point"}
+          }
+        },
+        "actual": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "proposition": {"type": "string", "minLength": 1, "maxLength": 5000},
+        "representation": {"enum": ["verbatim", "paraphrase"]},
+        "claim_kind": {"enum": ["measurement", "reported-action", "public-position", "forecast", "denial", "allegation", "capacity"]},
+        "subject_actor_ids": {"type": "array", "maxItems": 20, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
+        "attribution": {
+          "type": "object", "additionalProperties": false,
+          "required": ["actor_id", "mode"],
+          "properties": {
+            "actor_id": {"type": ["string", "null"]},
+            "mode": {"enum": ["explicit-speaker", "reported-speaker", "publisher", "unresolved"]}
+          }
+        }
+      }
+    },
+    "powerBasis": {
+      "type": "object", "additionalProperties": false,
+      "required": ["power_basis_id", "actor_id", "domain", "description", "scope", "time_scope", "workflow_state", "evidence", "limitations", "falsifiers"],
+      "properties": {
+        "power_basis_id": {"$ref": "#/$defs/identifier"},
+        "actor_id": {"$ref": "#/$defs/identifier"},
+        "domain": {"enum": ["military", "economic", "diplomatic", "institutional", "technological", "information", "logistics", "legal", "humanitarian", "other"]},
+        "description": {"type": "string", "minLength": 1, "maxLength": 5000},
+        "scope": {"$ref": "#/$defs/powerScope"},
+        "time_scope": {"$ref": "#/$defs/timeScope"},
+        "workflow_state": {"enum": ["draft", "active", "contested", "retired"]},
+        "evidence": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/$defs/evidenceLink"}},
+        "limitations": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+        "falsifiers": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}
+      }
+    },
+    "powerScope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relationship", "geographies", "operations", "related_actor_ids"],
+      "properties": {
+        "relationship": {"enum": ["self-capacity", "bilateral-leverage", "institutional-role", "network-position", "situational-access", "other"]},
+        "geographies": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+        "operations": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+        "related_actor_ids": {"type": "array", "maxItems": 20, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}}
+      },
+      "allOf": [{
+        "if": {"properties": {"relationship": {"const": "bilateral-leverage"}}},
+        "then": {"properties": {"related_actor_ids": {"minItems": 1, "maxItems": 1}}}
+      }]
+    },
+    "intent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["hypothesis_id", "actor_id", "topic", "hypothesis", "rationale", "time_scope", "workflow_state", "evidence", "alternatives", "falsifiers"],
+      "properties": {
+        "hypothesis_id": {"$ref": "#/$defs/identifier"},
+        "actor_id": {"$ref": "#/$defs/identifier"},
+        "topic": {"type": "string", "minLength": 1, "maxLength": 500},
+        "hypothesis": {"type": "string", "minLength": 1, "maxLength": 5000},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 5000},
+        "time_scope": {"$ref": "#/$defs/timeScope"},
+        "workflow_state": {"enum": ["draft", "active", "contested", "retired"]},
+        "evidence": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/$defs/evidenceLink"}},
+        "alternatives": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+        "falsifiers": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 2000}}
+      }
+    },
+    "evidenceLink": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claim_id", "effect", "reason"],
+      "properties": {
+        "claim_id": {"$ref": "#/$defs/identifier"},
+        "effect": {"enum": ["supports", "contradicts"]},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 2000}
+      }
+    },
+    "timeScope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"type": ["string", "null"], "format": "date-time"},
+        "end": {"type": ["string", "null"], "format": "date-time"}
+      },
+      "anyOf": [
+        {"properties": {"start": {"type": "string"}}},
+        {"properties": {"end": {"type": "string"}}}
+      ]
+    },
+    "identifier": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$"},
+    "contradiction": {
+      "type": "object", "additionalProperties": false,
+      "required": ["left_claim_id", "right_claim_id", "explanation"],
+      "properties": {
+        "left_claim_id": {"type": "string"},
+        "right_claim_id": {"type": "string"},
+        "explanation": {"type": "string", "minLength": 1, "maxLength": 5000}
+      }
+    }
+  }
+}
