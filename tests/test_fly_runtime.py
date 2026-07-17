@@ -105,7 +105,8 @@ def test_runtime_health_fails_when_all_collection_groups_are_stale(tmp_path):
 
     with patch("ops.fly_runtime.COLLECTOR_STATUS", status), \
          patch("ops.fly_runtime.shutil.disk_usage", return_value=SimpleNamespace(free=10**9)), \
-         patch("ops.fly_runtime.time.time", return_value=10_000.0):
+         patch("ops.fly_runtime.time.time", return_value=10_000.0), \
+         patch("ops.fly_runtime.time.monotonic", return_value=1_000.0):
         assert fly_runtime._runtime_health_error(0.0) == "all collection groups are stale"
 
 
