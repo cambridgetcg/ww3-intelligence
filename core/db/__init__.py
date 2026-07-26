@@ -24,6 +24,22 @@ SCHEMA_VERSION = 2
 def _utcnow_naive():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
+# An AnalysisRun row states which model contract produced it.  Rows written
+# before the field existed stay NULL: they predate the forecast contract, so
+# their absence is not evidence about which contract they ran.
+OBSERVATION_ANALYSIS_CONTRACT = "observation-analysis-v1"
+HORIZON_FORECAST_CONTRACT = "horizon-forecast-v1"
+
+# A Prediction row records who authored it.  NULL is its own state: rows that
+# predate authorship capture are unrecorded, which is not the same claim as
+# hand-entered.
+PREDICTION_AUTHORSHIP_MODEL = "model-derived"
+PREDICTION_AUTHORSHIP_MANUAL = "hand-entered"
+PREDICTION_AUTHORSHIP_UNRECORDED = "unrecorded"
+PREDICTION_AUTHORSHIPS = frozenset(
+    {PREDICTION_AUTHORSHIP_MODEL, PREDICTION_AUTHORSHIP_MANUAL}
+)
+
 HORIZONS = [
     ("1h",  "1 Hour"),
     ("3h",  "3 Hours"),
@@ -213,6 +229,7 @@ class AnalysisRun(BaseModel):
     id = AutoField()
     observation = ForeignKeyField(Observation, backref="analysis_runs")
     event = ForeignKeyField(Event, backref="analysis_runs", null=True)
+    contract = CharField(null=True, default=OBSERVATION_ANALYSIS_CONTRACT)
     analysis_key = CharField(null=True)
     status = CharField(default="pending")
     model_name = CharField(default="unknown")
@@ -237,6 +254,8 @@ class Prediction(BaseModel):
     id = AutoField()
     event = ForeignKeyField(Event, backref="predictions")
     scenario_node = ForeignKeyField(ScenarioNode, backref="predictions", null=True)
+    analysis_run = ForeignKeyField(AnalysisRun, backref="predictions", null=True)
+    authorship = CharField(null=True)  # PREDICTION_AUTHORSHIPS, or None for unrecorded
     probability = IntegerField()  # 0-100
     confidence = CharField(default="medium")
     timeframe = CharField(null=True)
@@ -287,24 +306,80 @@ def _table_columns(table: str) -> set[str]:
     return {row[1] for row in cursor.fetchall()}
 
 
+def _migrate_forecast_provenance():
+    """Add forecast provenance columns to run/prediction tables if missing."""
+    if "contract" not in _table_columns("analysisrun"):
+        database.execute_sql(
+            'ALTER TABLE analysisrun ADD COLUMN "contract" VARCHAR(255) NULL'
+        )
+    prediction_columns = _table_columns("prediction")
+    additions = {
+        # SQLite only accepts an added REFERENCES column when it defaults to
+        # NULL, which is also the honest value for rows that predate capture.
+        "analysis_run_id": "INTEGER NULL REFERENCES analysisrun(id)",
+        "authorship": "VARCHAR(255) NULL",
+    }
+    for name, declaration in additions.items():
+        if name not in prediction_columns:
+            database.execute_sql(
+                f'ALTER TABLE prediction ADD COLUMN "{name}" {declaration}'
+            )
+
+
+def _identity_digest(
+    contract: str,
+    subject_key: str,
+    model_name: str,
+    prompt_version: str,
+    code_version: str,
+) -> str:
+    encoded = json.dumps(
+        [contract, subject_key, model_name, prompt_version, code_version],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def make_analysis_key(
     observation_dedupe_key: str,
     model_name: str,
     prompt_version: str,
     code_version: str,
 ) -> str:
-    encoded = json.dumps(
-        [
-            "analysis-v1",
-            observation_dedupe_key,
-            model_name,
-            prompt_version,
-            code_version,
-        ],
-        ensure_ascii=False,
-        separators=(",", ":"),
+    return _identity_digest(
+        "analysis-v1",
+        observation_dedupe_key,
+        model_name,
+        prompt_version,
+        code_version,
     )
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def make_forecast_key(
+    forecast_subject_key: str,
+    model_name: str,
+    prompt_version: str,
+    code_version: str,
+) -> str:
+    """Key one forecast contract into the shared AnalysisRun lease column."""
+    # Both contracts share analysisrun.analysis_key and its unique index, so
+    # the contract name has to enter the digest and keep the namespaces apart.
+    return _identity_digest(
+        HORIZON_FORECAST_CONTRACT,
+        forecast_subject_key,
+        model_name,
+        prompt_version,
+        code_version,
+    )
+
+
+def observation_analysis_runs():
+    """Select runs of the observation-analysis contract, unstamped rows included."""
+    return AnalysisRun.select().where(
+        AnalysisRun.contract.is_null(True)
+        | (AnalysisRun.contract != HORIZON_FORECAST_CONTRACT)
+    )
 
 
 def _backfill_analysis_keys():
@@ -465,9 +540,11 @@ def init_db():
     database.connect(reuse_if_open=True)
     current_version = _assert_supported_schema_version()
     database.create_tables(ALL_MODELS, safe=True)
-    # This structural check is cheap and repairs databases that were stamped
+    # These structural checks are cheap and repair databases that were stamped
     # v2 by an interrupted/partial migration without repeating data backfills.
+    # Additive columns therefore reach existing v2 volumes without a version bump.
     _migrate_prediction_horizon()
+    _migrate_forecast_provenance()
     if current_version < SCHEMA_VERSION:
         migrate_schema()
     install_observation_guards()

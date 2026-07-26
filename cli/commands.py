@@ -28,7 +28,11 @@ def cli(ctx):
 
 
 def _event_lineage(event):
-    runs = list(event.analysis_runs)
+    from core.db import AnalysisRun, observation_analysis_runs
+
+    # Lineage is which captures produced the event.  A forecast run hangs off
+    # the same event without adding one.
+    runs = list(observation_analysis_runs().where(AnalysisRun.event == event))
     if not runs:
         return "NO-PROVENANCE", runs
     if any(run.observation.synthetic for run in runs):
@@ -90,7 +94,7 @@ def _not_found(resource: str, identifier: int, *, as_json: bool = False) -> None
 
 
 def _analysis_states(observations) -> dict[int, dict]:
-    from core.db import AnalysisRun
+    from core.db import AnalysisRun, observation_analysis_runs
 
     observation_ids = [observation.id for observation in observations]
     states = {
@@ -104,8 +108,10 @@ def _analysis_states(observations) -> dict[int, dict]:
     }
     if not observation_ids:
         return states
+    # A forecast run is analysis of an event, not of the observation it is
+    # anchored to, so it must not become that observation's analysis state.
     runs = (
-        AnalysisRun.select()
+        observation_analysis_runs()
         .where(AnalysisRun.observation.in_(observation_ids))
         .order_by(AnalysisRun.created_at.desc(), AnalysisRun.id.desc())
     )
@@ -216,11 +222,14 @@ def show_event(event_id):
     else:
         observation_ids = ", ".join(str(run.observation_id) for run in runs)
         click.echo(f"EVIDENCE STATUS: SOURCED — observation(s): {observation_ids}")
+    # These two are stored Event fields, written either by a model run or by
+    # whoever typed them.  Printed bare they read as findings, which is the one
+    # thing this framework does not produce.
     click.echo(
         f"Date: {e.date} | Category: {terminal_line(e.category)} "
-        f"| Significance: {e.significance}/10"
+        f"| Claimed significance: {e.significance}/10"
     )
-    click.echo(f"Classification: {terminal_line(e.classification)}")
+    click.echo(f"Claimed classification: {terminal_line(e.classification)}")
     if e.summary:
         click.echo(f"\nSummary:\n{terminal_text(e.summary)}")
     actors = list(e.event_actors)
@@ -261,11 +270,14 @@ def show_event(event_id):
             click.echo(f"  Diplomatic:  regional={ia.diplomatic_regional}/10  global={ia.diplomatic_global}/10")
     predictions = list(e.predictions)
     if predictions:
+        from analysis.predictions import prediction_authorship
+
         click.echo(f"\nPredictions ({len(predictions)}):")
         for p in predictions:
             resolved = f" [resolved: brier={p.brier_score:.4f}]" if p.brier_score is not None else ""
             click.echo(
-                f"  [{p.id}] {p.probability}% conf={terminal_line(p.confidence)}"
+                f"  [{p.id}] {p.probability}% conf={terminal_line(p.confidence)} "
+                f"| {terminal_line(prediction_authorship(p))}"
                 f"{resolved}: {terminal_line(p.reasoning[:80])}"
             )
 
@@ -771,6 +783,7 @@ def provenance(event_id, as_json):
             payload["analysis_runs"].append({
                 "id": run.id,
                 "status": run.status,
+                "contract": run.contract,
                 "attempt": run.attempt,
                 "model": run.model_name,
                 "prompt_sha256": run.prompt_version,
@@ -804,6 +817,7 @@ def provenance(event_id, as_json):
         observation = run.observation
         click.echo(
             f"\nRun {run.id} | {terminal_line(run.status)} "
+            f"| contract={terminal_line(run.contract or 'unrecorded')} "
             f"| model={terminal_line(run.model_name or 'unknown')} "
             f"| attempt={run.attempt} "
             f"| code={terminal_line(run.code_version or 'unknown')}"
@@ -855,6 +869,7 @@ def list_runs(run_status, as_json):
         records.append({
             "id": run.id,
             "status": run.status,
+            "contract": run.contract,
             "attempt": run.attempt,
             "event_id": run.event_id,
             "observation_id": observation.id,
@@ -883,7 +898,9 @@ def list_runs(run_status, as_json):
                 f"{terminal_line(record['failure_code'])}"
             )
         click.echo(
-            f"[{record['id']}] {record['status']:10} | attempt={record['attempt']} "
+            f"[{record['id']}] {record['status']:10} "
+            f"| contract={terminal_line(record['contract'] or 'unrecorded')} "
+            f"| attempt={record['attempt']} "
             f"| observation={record['observation_id']} | event={record['event_id'] or '-'} "
             f"| source={terminal_line(record['source'])}{failure}"
         )
@@ -1006,8 +1023,12 @@ def predict(event_id, probability, reasoning, timeframe, confidence):
     except Event.DoesNotExist:
         click.echo(f"Event {event_id} not found.")
         return
+    from core.db import PREDICTION_AUTHORSHIP_MANUAL
     from analysis.predictions import create_prediction
-    pred = create_prediction(event, probability, reasoning, confidence=confidence, timeframe=timeframe)
+    pred = create_prediction(
+        event, probability, reasoning, confidence=confidence, timeframe=timeframe,
+        authorship=PREDICTION_AUTHORSHIP_MANUAL,
+    )
     click.echo(
         f"Created prediction [{pred.id}]: {probability}% — "
         f"{terminal_line(reasoning[:60])}"
@@ -1027,7 +1048,11 @@ def predict_horizons(event_id, manual):
         return
 
     if manual:
-        from core.db import HORIZON_CODES, HORIZON_LABELS
+        from core.db import (
+            HORIZON_CODES,
+            HORIZON_LABELS,
+            PREDICTION_AUTHORSHIP_MANUAL,
+        )
         from analysis.predictions import create_prediction as cp
         click.echo(
             f"Manual entry for event [{event_id}]: {terminal_line(event.title)}"
@@ -1045,7 +1070,10 @@ def predict_horizons(event_id, manual):
             prob = click.prompt("  Probability (0-100)", type=click.IntRange(0, 100))
             conf = click.prompt("  Confidence", type=click.Choice(["low", "medium", "high"]),
                                 default="medium")
-            cp(event, prob, reasoning.strip(), conf, label, horizon=code)
+            cp(
+                event, prob, reasoning.strip(), conf, label, horizon=code,
+                authorship=PREDICTION_AUTHORSHIP_MANUAL,
+            )
             created += 1
         click.echo(f"\nCreated {created} horizon predictions.")
         return
@@ -1055,15 +1083,32 @@ def predict_horizons(event_id, manual):
         click.echo("Claude is unavailable or disabled. Use --manual for manual entry.")
         return
 
+    from analysis.multi_horizon import (
+        forecast_run_state,
+        forecast_source_observation,
+        generate_multi_horizon_predictions,
+    )
+
+    if forecast_source_observation(event) is None:
+        click.echo(
+            f"Event {event_id} has no observation lineage, so a model forecast "
+            "cannot be recorded as an AnalysisRun. Use --manual to enter horizons."
+        )
+        return
+
     click.echo(
         f"Generating multi-horizon predictions for [{event_id}]: "
         f"{terminal_line(event.title)}"
     )
     click.echo("Calling the constrained local Claude JSON boundary...")
-    from analysis.multi_horizon import generate_multi_horizon_predictions
     results = generate_multi_horizon_predictions(event)
     if not results:
-        click.echo("No predictions generated. Check Claude availability and event data.")
+        state = forecast_run_state(event)
+        click.echo(
+            f"No new forecast recorded. Latest forecast run state: "
+            f"{terminal_line(state['status'])} (run={state['run_id'] or '-'}, "
+            f"predictions={state['prediction_count']})."
+        )
         return
     click.echo(f"\nGenerated {len(results)} horizon predictions:\n")
     for r in results:
@@ -1071,7 +1116,10 @@ def predict_horizons(event_id, manual):
             f"  [{r['horizon']:4s}] {r['probability']:3d}%  conf={r['confidence']:6s}  "
             f"id={r['prediction_id']}  {terminal_line(r['outcome'])}"
         )
-    click.echo(f"\nAll saved. View with: python ww3.py show {event_id}")
+    click.echo(
+        f"\nAll saved under analysis run [{results[0]['analysis_run_id']}]. "
+        f"View with: python ww3.py show {event_id}"
+    )
 
 
 @cli.command("resolve")

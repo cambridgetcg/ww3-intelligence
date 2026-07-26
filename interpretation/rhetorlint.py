@@ -4,6 +4,14 @@ RhetorLint marks visible language patterns.  This module deliberately omits
 its de-spun ``strip`` from WW3 output because removing qualifiers such as
 ``reportedly`` can destroy evidential meaning.  Nothing here reads a person,
 rates truth, infers intent, or enters the model-derived Event pipeline.
+
+The engine is general-purpose and this bridge is the only layer that knows
+the corpus: wire slugs, alert strings, and institutional headers.  A rule
+whose tell is a typographic convention of that corpus is withheld here by
+rule id, never by rewriting the engine's note.  Every withheld rule stays in
+the output with its reason and its withheld-mark count, because a silent
+filter would let a reader read "this rule was not applied" as "this rule
+found nothing" — a worse claim than the false mark it removes.
 """
 
 from __future__ import annotations
@@ -26,14 +34,36 @@ from core.registry import source_identity_context
 from core.settings import PROJECT_ROOT, get_setting
 
 
-CONTRACT_VERSION = "ww3-rhetorlint/0.1"
+# 0.2 withholds excluded rules from the marks, and therefore from the tell
+# counts.  The same passage answers with a smaller number than 0.1 gave it, so
+# a reader comparing two runs needs the contract to say which one it is.
+CONTRACT_VERSION = "ww3-rhetorlint/0.2"
 PASSAGE_TRANSFORM_VERSION = "visible-text-v1"
 MAX_PASSAGES = 8
 MAX_PASSAGE_BYTES = 16 * 1024
 MAX_TOTAL_INPUT_BYTES = 64 * 1024
 MAX_MARKS = 4_096
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+MAX_PACK_RULES = 512
 RUN_TIMEOUT_SECONDS = 5
+
+# `shouting.caps` (rules-en 0.1.2) marks any run of ALL-CAPS words as "volume
+# standing in for argument".  In this corpus that pattern is `SECURITY
+# COUNCIL`, `FACT SHEET`, a GDACS alert string, or a wire slug, so the mark
+# presents house typography as a manipulation tell.  `RHETORLINT_EXCLUDED_RULES`
+# is a comma-separated override; set it empty to apply every packed rule.
+DEFAULT_EXCLUDED_RULES = ("shouting.caps",)
+_EXCLUSION_REASONS = {
+    "shouting.caps": (
+        "Withheld for this corpus: wire and institutional copy set headers, "
+        "slugs, and alert strings in ALL-CAPS as typographic convention, so "
+        "the rule's manipulation note does not describe the visible language."
+    ),
+}
+_CONFIGURED_EXCLUSION_REASON = (
+    "Withheld by local RHETORLINT_EXCLUDED_RULES configuration; this bridge "
+    "records no reviewed reason for it."
+)
 
 FAMILIES = {
     "manipulative-wording", "simplification", "distraction",
@@ -42,6 +72,8 @@ FAMILIES = {
 LEVELS = {"info", "note", "warning"}
 _RULE_ID = re.compile(r"^[a-z0-9-]+\.[a-z0-9-]+$")
 _COMPATIBLE_VERSION = re.compile(r"^0\.1(?:\.\d+)?$")
+_PACK_ID = "@rhetorlint/rules-en"
+_COMPATIBLE_PACK_VERSION = re.compile(r"^0\.1\.\d+$")
 _RAW_FIELDS = (
     ("title", "headline"),
     ("summary", "description"),
@@ -81,8 +113,28 @@ class RhetorLintInvalidOutput(RhetorLintError):
     code = "rhetorlint_invalid_output"
 
 
+# A pack that adds a family, level, rule-id shape, or version this bridge has
+# not reviewed fails the whole run rather than losing the unknown mark: an
+# annotation the bridge cannot describe must not reach a casefile, and must
+# not look like a clean zero-match run either.  It stays a subclass so callers
+# that already handle invalid output keep working with a narrower code.
+class RhetorLintPackUnrecognized(RhetorLintInvalidOutput):
+    code = "rhetorlint_pack_unrecognized"
+
+
+class RhetorLintConfigInvalid(RhetorLintError):
+    code = "rhetorlint_config_invalid"
+
+
 class NoAnalyzableText(RhetorLintError):
     code = "no_analyzable_text"
+
+
+@dataclass(frozen=True, slots=True)
+class RulesPack:
+    pack_id: str
+    version: str
+    declared_rule_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +145,7 @@ class RhetorLintRuntime:
     rules_path: Path
     core_sha256: str
     rules_sha256: str
+    pack: RulesPack
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +264,46 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def excluded_rule_ids() -> tuple[str, ...]:
+    """Return the rule ids withheld from marks, in stable order."""
+    configured = get_setting("RHETORLINT_EXCLUDED_RULES")
+    if configured is None:
+        return DEFAULT_EXCLUDED_RULES
+    rule_ids = {item.strip() for item in configured.split(",")} - {""}
+    if any(not _RULE_ID.fullmatch(item) for item in rule_ids):
+        raise RhetorLintConfigInvalid()
+    return tuple(sorted(rule_ids))
+
+
+def _rules_pack(path: Path) -> RulesPack:
+    """Read the local rule pack's declared identity and rule ids."""
+    try:
+        declared = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        raise RhetorLintPackUnrecognized() from None
+    if not isinstance(declared, dict):
+        raise RhetorLintPackUnrecognized()
+    version = declared.get("version")
+    rules = declared.get("rules")
+    if (
+        declared.get("id") != _PACK_ID
+        or not isinstance(version, str)
+        or not _COMPATIBLE_PACK_VERSION.fullmatch(version)
+        or not isinstance(rules, list)
+        or len(rules) > MAX_PACK_RULES
+    ):
+        raise RhetorLintPackUnrecognized()
+    rule_ids = set()
+    for rule in rules:
+        rule_id = rule.get("ruleId") if isinstance(rule, dict) else None
+        if not isinstance(rule_id, str) or not _RULE_ID.fullmatch(rule_id):
+            raise RhetorLintPackUnrecognized()
+        rule_ids.add(rule_id)
+    return RulesPack(
+        pack_id=_PACK_ID, version=version, declared_rule_ids=tuple(sorted(rule_ids))
+    )
+
+
 def _setting_path(name: str) -> Path | None:
     value = get_setting(name)
     if not value:
@@ -251,6 +344,7 @@ def discover_runtime() -> RhetorLintRuntime:
         rules_path=rules_path,
         core_sha256=_sha256_file(core_path),
         rules_sha256=_sha256_file(rules_path),
+        pack=_rules_pack(rules_path),
     )
 
 
@@ -340,9 +434,9 @@ def _validate_result(value: Any, passage: Passage) -> dict[str, Any]:
     engine_version = _bounded_string(engine.get("version"), 50)
     rules_version = _bounded_string(engine.get("rules"), 200)
     if not _COMPATIBLE_VERSION.fullmatch(engine_version):
-        raise RhetorLintInvalidOutput()
-    if not rules_version.startswith("@rhetorlint/rules-en@0.1."):
-        raise RhetorLintInvalidOutput()
+        raise RhetorLintPackUnrecognized()
+    if not rules_version.startswith(f"{_PACK_ID}@0.1."):
+        raise RhetorLintPackUnrecognized()
 
     normalized_marks = []
     for mark in marks:
@@ -353,7 +447,7 @@ def _validate_result(value: Any, passage: Passage) -> dict[str, Any]:
         level = _bounded_string(mark.get("level"), 20)
         actual = _bounded_string(mark.get("actual"), MAX_PASSAGE_BYTES)
         if not _RULE_ID.fullmatch(rule_id) or family not in FAMILIES or level not in LEVELS:
-            raise RhetorLintInvalidOutput()
+            raise RhetorLintPackUnrecognized()
         position = mark.get("position")
         if not isinstance(position, dict):
             raise RhetorLintInvalidOutput()
@@ -386,6 +480,49 @@ def _validate_result(value: Any, passage: Passage) -> dict[str, Any]:
             "rules": rules_version,
         },
     }
+
+
+def _apply_exclusions(
+    result: dict[str, Any], excluded: tuple[str, ...]
+) -> dict[str, Any]:
+    """Withhold excluded rule ids from one validated result and count them."""
+    withheld: dict[str, int] = {}
+    kept = []
+    for mark in result["marks"]:
+        if mark["rule_id"] in excluded:
+            withheld[mark["rule_id"]] = withheld.get(mark["rule_id"], 0) + 1
+        else:
+            kept.append(mark)
+    if not withheld:
+        return {**result, "excluded_marks": {}}
+    # Density describes the marks this bridge reports, so a reader can still
+    # count them; the withheld tally beside it restores the engine's total.
+    words = result["source"]["words"]
+    return {
+        **result,
+        "density": {
+            "tells": len(kept),
+            "per_100_words": round(len(kept) / words * 100, 1) if words else 0,
+        },
+        "marks": kept,
+        "excluded_marks": dict(sorted(withheld.items())),
+    }
+
+
+def _engine_identity(
+    runtime: RhetorLintRuntime, results: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Fold one engine identity from every passage of a single run."""
+    # The engine echoes back the pack it was handed, so disagreement between
+    # passages, or with the pack parsed here, means the marks cannot be tied
+    # to the artifact hashes recorded beside them.
+    identity = results[0]["engine"]
+    expected_rules = f"{runtime.pack.pack_id}@{runtime.pack.version}"
+    if any(item["engine"] != identity for item in results):
+        raise RhetorLintPackUnrecognized()
+    if identity["rules"] != expected_rules:
+        raise RhetorLintPackUnrecognized()
+    return dict(identity)
 
 
 def _run(runtime: RhetorLintRuntime, passages: tuple[Passage, ...]) -> list[dict[str, Any]]:
@@ -467,14 +604,20 @@ def analyze_observation_rhetoric(observation: Observation) -> dict[str, Any]:
     passages = extract_passages(observation)
     if not passages:
         raise NoAnalyzableText()
+    excluded = excluded_rule_ids()
     runtime = discover_runtime()
     results = _run(runtime, passages)
+    engine = _engine_identity(runtime, results)
     records = []
     total_words = 0
     total_marks = 0
+    withheld_totals: dict[str, int] = {}
     for passage, result in zip(passages, results):
+        result = _apply_exclusions(result, excluded)
         total_words += result["source"]["words"]
         total_marks += result["density"]["tells"]
+        for rule_id, count in result["excluded_marks"].items():
+            withheld_totals[rule_id] = withheld_totals.get(rule_id, 0) + count
         records.append({
             "passage_id": passage.passage_id,
             "field": passage.field,
@@ -503,26 +646,51 @@ def analyze_observation_rhetoric(observation: Observation) -> dict[str, Any]:
         "runtime": {
             "core_sha256": runtime.core_sha256,
             "rules_sha256": runtime.rules_sha256,
+            "engine": engine,
+            # The pack declares these ids; the bridge cannot observe which of
+            # them the engine evaluated, so the applied set is exactly the
+            # declared set minus `excluded_rules`.
+            "rules_pack": {
+                "id": runtime.pack.pack_id,
+                "version": runtime.pack.version,
+                "declared_rule_ids": list(runtime.pack.declared_rule_ids),
+            },
+            "excluded_rules": [
+                {
+                    "rule_id": rule_id,
+                    "reason": _EXCLUSION_REASONS.get(
+                        rule_id, _CONFIGURED_EXCLUSION_REASON
+                    ),
+                    "declared_by_pack": rule_id in runtime.pack.declared_rule_ids,
+                    "marks_withheld": withheld_totals.get(rule_id, 0),
+                }
+                for rule_id in excluded
+            ],
         },
         "summary": {
             "passages": len(records),
             "words": total_words,
             "matched_tells": total_marks,
             "per_100_words": round(total_marks / total_words * 100, 1) if total_words else 0,
+            "excluded_marks": sum(withheld_totals.values()),
         },
         "passages": records,
         "scope": (
             "Visible language-pattern annotations only; not intent, deception, truth, "
             "credibility, corroboration, or actor attribution. Zero matches means only "
-            "that the current English rules matched nothing. RhetorLint strip is omitted "
-            "to preserve evidential qualifiers."
+            "that the applied English rules matched nothing; rules named in "
+            "runtime.excluded_rules were withheld at this bridge and their marks are "
+            "counted, not shown. RhetorLint strip is omitted to preserve evidential "
+            "qualifiers."
         ),
     }
 
 
 __all__ = [
-    "CONTRACT_VERSION", "NoAnalyzableText", "Passage", "RhetorLintError",
-    "RhetorLintInvalidOutput", "RhetorLintOutputLimit", "RhetorLintTimeout",
-    "RhetorLintRuntimeChanged", "RhetorLintUnavailable",
-    "analyze_observation_rhetoric", "discover_runtime", "extract_passages",
+    "CONTRACT_VERSION", "DEFAULT_EXCLUDED_RULES", "NoAnalyzableText", "Passage",
+    "RhetorLintConfigInvalid", "RhetorLintError", "RhetorLintInvalidOutput",
+    "RhetorLintOutputLimit", "RhetorLintPackUnrecognized", "RhetorLintTimeout",
+    "RhetorLintRuntimeChanged", "RhetorLintUnavailable", "RulesPack",
+    "analyze_observation_rhetoric", "discover_runtime", "excluded_rule_ids",
+    "extract_passages",
 ]

@@ -279,6 +279,12 @@ The optional dashboard starts on the Source Observations page:
 .venv/bin/streamlit run dashboard/app.py
 ```
 
+Its Collection Cycles panel reports when each group and each registered feed
+last recorded a capture success. That is a statement about this collector, not
+about a publisher: a stale cycle says no capture completed recently, and a fresh
+one is not evidence that anything captured is true. Every score the dashboard
+shows names what wrote it — a specific AnalysisRun, or an operator.
+
 ## Published documentation
 
 GitHub Pages publishes a static documentation/spec surface at

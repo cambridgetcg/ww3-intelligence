@@ -72,7 +72,9 @@ def test_cli_show_labels_synthetic_event_before_scores():
 
     assert result.exit_code == 0
     assert "SYNTHETIC FIXTURE" in result.output
-    assert result.output.index("SYNTHETIC FIXTURE") < result.output.index("Significance")
+    assert result.output.index("SYNTHETIC FIXTURE") < result.output.index(
+        "Claimed significance"
+    )
 
 
 def test_cli_predict():
@@ -371,7 +373,7 @@ def test_cli_rhetoric_is_explicit_json_and_failure_does_not_leak_source():
     })
     annotation = {
         "status": "completed",
-        "contract_version": "ww3-rhetorlint/0.1",
+        "contract_version": "ww3-rhetorlint/0.2",
         "observation": {"id": observation.id},
         "runtime": {"core_sha256": "c", "rules_sha256": "r"},
         "summary": {"passages": 1, "words": 3, "matched_tells": 0, "per_100_words": 0},
@@ -385,7 +387,7 @@ def test_cli_rhetoric_is_explicit_json_and_failure_does_not_leak_source():
         result = CliRunner().invoke(cli, ["rhetoric", str(observation.id), "--json"])
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["contract_version"] == "ww3-rhetorlint/0.1"
+    assert json.loads(result.output)["contract_version"] == "ww3-rhetorlint/0.2"
 
     with patch(
         "interpretation.rhetorlint.analyze_observation_rhetoric",

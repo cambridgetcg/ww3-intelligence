@@ -72,7 +72,12 @@ or calls the model boundary.
    deception, credibility, intent, or actor attribution, and its `strip` output
    remains omitted to preserve evidential qualifiers. Configured
    `RHETORLINT_ROOT`/`RHETORLINT_NODE` code executes with user privileges; the
-   boundary is not a filesystem, process, or network sandbox.
+   boundary is not a filesystem, process, or network sandbox. A rule whose tell
+   is a house typography rather than a persuasion pattern may be withheld by
+   `RHETORLINT_EXCLUDED_RULES` (default `shouting.caps`); every withheld rule is
+   named in the output, because a withheld rule finding nothing and a rule that
+   never ran are different claims. Withheld marks leave the tell counts, so the
+   contract version states which arithmetic produced them.
 11. `ww3.assessment/v1` binds claims to exact passage spans and registered
    subject actors. A power basis is a non-scored, time-scoped description with
    required relational/geographic/operational scope and reasoned evidence
@@ -89,6 +94,13 @@ or calls the model boundary.
    No intent confidence/probability is allowed.
 12. Mutable model state belongs in AnalysisRun, entered only through
    `core/pipeline.py:analyze_observation` or its explicit compatibility wrappers.
+   Horizon forecasts are such a wrapper: they record their own AnalysisRun under
+   the `horizon-forecast-v1` contract, so the model, prompt hash, and code
+   version behind a stored probability are recoverable. A forecast run carries
+   no observation lineage and must never be counted as evidence provenance for
+   the Event it hangs from. A Prediction states its authorship; rows that
+   predate the field read `unrecorded`, which is not a claim that a person
+   wrote them.
 13. Model output must pass `analysis/schema.py`; derived Event/branch writes stay
    in one fenced transaction. One observation cannot confirm itself.
 14. SQLite is canonical. Event JSONL is a model-layer compatibility view.
@@ -179,6 +191,12 @@ real Claude executable, and set `WW3_DISABLE_LLM=1`. Collection tests must asser
 zero AnalysisRun, Event, stream, subprocess, and model calls. Never weaken these
 controls to make a test pass.
 
+The socket and Claude denials are installed at `conftest.py` import time through
+a module-owned patcher, so a test calling `monkeypatch.undo()` cannot restore
+the real ones for the rest of its body. The denial covers the call shapes an
+adapter can plausibly reach for; it is a guard against accident, not a sandbox
+against an adversary.
+
 Tests of the explicit rhetoric path may replace its Node subprocess, but the
 ordinary collection and projection boundaries must remain subprocess-free.
 
@@ -215,3 +233,12 @@ without explicit scope.
   The separate Fly runtime hosts the dashboard, SQLite volume, and collection
   watcher, but no RhetorLint process or model-derived analysis. Its single
   Machine/volume topology is not high availability.
+- Per-group and per-source capture cycles are reported, not alerted on. A group
+  going stale reaches an operator only through the dashboard or the log; nothing
+  pushes it anywhere, and the Fly log buffer is short. Partial staleness is
+  deliberately not fatal — one publisher changing its feed URL must not end the
+  deployment — so a source can stop being collected while the runtime stays up.
+- The RhetorLint bridge runs a sibling checkout, not a pinned release artifact,
+  so upgrading that checkout changes this system's rhetoric output with no
+  change here. The engine and rule hashes are recorded per run, which makes the
+  drift legible after the fact but does not prevent it.

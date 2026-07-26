@@ -2,20 +2,27 @@
 
 This module deliberately has no terminal UI and never imports the analysis
 pipeline.  It is suitable for a long-running service colocated with the
-SQLite ledger.
+SQLite ledger.  It also owns the pure reader that turns its own heartbeat
+file into a per-group and per-source view of last observed capture success,
+so the supervisor and the dashboard share one definition of staleness.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
 import sys
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from core.db import database, init_db
+from core.registry import rss_source_profiles
 
 
 USGS_INTERVAL = 300
@@ -23,8 +30,20 @@ NEWS_INTERVAL = 600
 GDACS_INTERVAL = 900
 WATCH_NEWS_LIMIT = 200
 WATCH_GDACS_LIMIT = 50
+COLLECTION_HEALTH_VERSION = "collection-health-v1"
+GROUP_INTERVALS = {
+    "usgs": USGS_INTERVAL,
+    "news": NEWS_INTERVAL,
+    "gdacs": GDACS_INTERVAL,
+}
+# One cycle can lose a full bounded fetch timeout on every registered feed, and
+# a redeploy adds another interval on top of that.  Every expectation below is
+# an interval multiplied by this tolerance, never a second copy of a number.
+STALENESS_TOLERANCE = 4
 _COLLECTION_WRITE_LOCK = threading.Lock()
 _STATUS_WRITE_LOCK = threading.Lock()
+_STALE_LOG_LOCK = threading.Lock()
+_LOGGED_STALE_KEYS: set[str] = set()
 
 
 def process_collected_leaves(leaves: list):
@@ -79,6 +98,210 @@ def _record_success(group: str) -> None:
             raise
         temporary.replace(path)
         os.chmod(path, 0o600)
+
+
+@dataclass(frozen=True, slots=True)
+class CollectorStatus:
+    """The heartbeat file as read, with a defined state when it is unusable."""
+
+    file_state: str
+    last_success: dict[str, float]
+    unreadable_keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionEntry:
+    """Last observed capture success for one collector group or source key."""
+
+    key: str
+    kind: str
+    state: str
+    last_capture_success_at: float | None
+    age_seconds: float | None
+    expected_max_age_seconds: float
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a fresh dictionary with a stable, strict-JSON-safe shape."""
+
+        return {
+            "key": self.key,
+            "kind": self.kind,
+            "state": self.state,
+            "last_capture_success_at": self.last_capture_success_at,
+            "last_capture_success_utc": _utc_isoformat(self.last_capture_success_at),
+            "age_seconds": self.age_seconds,
+            "expected_max_age_seconds": self.expected_max_age_seconds,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionHealth:
+    """A versioned, JSON-safe view of when each collector last succeeded."""
+
+    observed_at: float
+    status_file_state: str
+    entries: tuple[CollectionEntry, ...]
+    health_version: str = COLLECTION_HEALTH_VERSION
+
+    def stale_keys(self) -> tuple[str, ...]:
+        """Name the collector keys whose last recorded success is overdue."""
+
+        return tuple(entry.key for entry in self.entries if entry.state == "stale")
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a fresh dictionary with a stable, strict-JSON-safe shape."""
+
+        return {
+            "health_version": self.health_version,
+            "observed_at": self.observed_at,
+            "status_file_state": self.status_file_state,
+            "entries": [entry.as_dict() for entry in self.entries],
+            "stale_keys": list(self.stale_keys()),
+        }
+
+
+def _utc_isoformat(timestamp: float | None) -> str | None:
+    if timestamp is None:
+        return None
+    try:
+        moment = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+def _registered_rss_sources() -> tuple[str, ...]:
+    """Name the RSS sources whose per-source heartbeat the news loop writes."""
+    try:
+        return tuple(profile.source_id for profile in rss_source_profiles())
+    except (OSError, RuntimeError, UnicodeError, ValueError):
+        # A registry a reader cannot load must not turn a heartbeat read into an
+        # exception; the keys already in the file still describe themselves.
+        return ()
+
+
+def read_collector_status(path: Path | None = None) -> CollectorStatus:
+    """Read the heartbeat file, degrading to a defined state when unusable."""
+    if path is None:
+        path = collector_status_path()
+    if path is None:
+        return CollectorStatus(file_state="absent", last_success={})
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return CollectorStatus(file_state="absent", last_success={})
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
+        return CollectorStatus(file_state="unreadable", last_success={})
+    groups = payload.get("groups") if isinstance(payload, dict) else None
+    if not isinstance(groups, dict):
+        return CollectorStatus(file_state="unreadable", last_success={})
+
+    last_success: dict[str, float] = {}
+    unreadable: list[str] = []
+    for key, value in groups.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            unreadable.append(key)
+        elif not math.isfinite(value):
+            unreadable.append(key)
+        else:
+            last_success[key] = float(value)
+    return CollectorStatus(
+        file_state="present",
+        last_success=last_success,
+        unreadable_keys=tuple(sorted(unreadable)),
+    )
+
+
+def collection_health(now: float | None = None) -> CollectionHealth:
+    """Summarize when each collector group and source key last captured.
+
+    The summary reports last observed capture success only.  A ``stale`` entry
+    means this collector group has not completed a cycle recently; it claims
+    nothing about the publisher, its availability, or its content.  A
+    ``never-observed`` entry means no success was ever written under that key,
+    which can simply mean the source was never enabled, and ``unknown`` means
+    the heartbeat itself could not be read.
+    """
+    observed_at = time.time() if now is None else float(now)
+    status = read_collector_status()
+
+    expected = {
+        group: float(interval * STALENESS_TOLERANCE)
+        for group, interval in GROUP_INTERVALS.items()
+    }
+    kinds = {group: "group" for group in GROUP_INTERVALS}
+    # Per-source heartbeats are written only by the news loop, which walks every
+    # registered feed once per news interval whatever the publisher is.
+    source_max_age = float(NEWS_INTERVAL * STALENESS_TOLERANCE)
+    observed_keys = (
+        *_registered_rss_sources(),
+        *status.last_success,
+        *status.unreadable_keys,
+    )
+    for key in observed_keys:
+        expected.setdefault(key, source_max_age)
+        kinds.setdefault(key, "source")
+
+    entries = []
+    for key in sorted(expected):
+        timestamp = status.last_success.get(key)
+        if status.file_state == "unreadable" or key in status.unreadable_keys:
+            state, age = "unknown", None
+        elif timestamp is None:
+            state, age = "never-observed", None
+        else:
+            age = round(observed_at - timestamp, 3)
+            # A future-dated heartbeat means the clock moved, not that a cycle
+            # was missed, so only a positive overdue age reads as stale.
+            state = "stale" if age > expected[key] else "fresh"
+        entries.append(
+            CollectionEntry(
+                key=key,
+                kind=kinds[key],
+                state=state,
+                last_capture_success_at=timestamp,
+                age_seconds=age,
+                expected_max_age_seconds=expected[key],
+            )
+        )
+    return CollectionHealth(
+        observed_at=observed_at,
+        status_file_state=status.file_state,
+        entries=tuple(entries),
+    )
+
+
+def log_stale_collection_transitions(health: CollectionHealth) -> tuple[str, ...]:
+    """Report staleness changes once per transition and return the lines."""
+    entries = {entry.key: entry for entry in health.entries}
+    stale = {key for key, entry in entries.items() if entry.state == "stale"}
+    lines = []
+    with _STALE_LOG_LOCK:
+        # An unreadable heartbeat is not a recovery, so a remembered key is only
+        # cleared once a later cycle records a success under it.
+        recovered = {
+            key
+            for key in _LOGGED_STALE_KEYS
+            if key in entries and entries[key].state == "fresh"
+        }
+        for key in sorted(stale - _LOGGED_STALE_KEYS):
+            entry = entries[key]
+            lines.append(
+                f"[collector:health] no capture success for {entry.kind} {key} "
+                f"in {entry.age_seconds:.0f}s "
+                f"(expected within {entry.expected_max_age_seconds:.0f}s)."
+            )
+        for key in sorted(recovered):
+            lines.append(
+                f"[collector:health] capture success recorded again for {key}."
+            )
+        _LOGGED_STALE_KEYS.difference_update(recovered)
+        _LOGGED_STALE_KEYS.update(stale)
+    for line in lines:
+        print(line, file=sys.stderr, flush=True)
+    return tuple(lines)
 
 
 def _log_batch(source: str, batch) -> None:
@@ -147,6 +370,10 @@ def ingest_thread_news(
                     cycle_succeeded = True
                 if cycle_succeeded:
                     _record_success("news")
+                # One yielding feed keeps the aggregate ``news`` heartbeat fresh
+                # while every other registered publisher fails silently inside
+                # iter_feed_batches, so the per-source keys are read here.
+                log_stale_collection_transitions(collection_health())
             except Exception as exc:
                 print(
                     f"[collector:news] cycle failed ({type(exc).__name__}).",
