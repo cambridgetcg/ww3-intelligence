@@ -154,7 +154,15 @@ def sources(as_json):
         f"{len(payload['sources'])} source(s)"
     )
     for source in payload["sources"]:
-        state = "active" if source["collection_enabled"] else "discovery-only"
+        # Disabled covers two different things: a source held back by choice,
+        # and one whose endpoint nobody has confirmed yet. Calling the second
+        # "discovery-only" would grant it a role it has not earned.
+        if source["collection_enabled"]:
+            state = "active"
+        elif "unverified" in (source.get("caveat") or ""):
+            state = "unconfirmed"
+        else:
+            state = "discovery-only"
         click.echo(
             f"  {source['source_id']:16} | {state:14} | "
             f"{source['content_role']:21} | {terminal_line(source['label'])}"

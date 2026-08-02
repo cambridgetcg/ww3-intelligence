@@ -1,19 +1,148 @@
-"""Conservative actor identity mentions over deterministic visible passages."""
+r"""Conservative actor identity mentions over deterministic visible passages.
+
+A mention is a visible occurrence of registered characters. It is never a
+finding that the actor acted, spoke, or is the subject of the sentence.
+
+The boundary guard around an alias is inferred from the alias's own
+characters, so `registry/actors.json` keeps its shape and declares no script.
+`\w` is Unicode-aware, which makes `(?<!\w)ALIAS(?!\w)` right for a script
+that separates words with spaces and unsatisfiable for one that does not:
+every neighbour of 中国 in 中国政府表示 is itself a word character, so the
+guarded pattern answers zero for the whole of Han, Kana, Thai, Lao, Khmer,
+Myanmar, and Tibetan text. A zero produced by the matcher's own shape reads
+in the output exactly like a passage that names nobody, and that silent,
+systematic absence is the failure this module exists to refuse.
+
+Guards are therefore decided per side. Korean spaces its words but
+agglutinates particles onto the noun (러시아는, 러시아에서), so Hangul keeps
+its leading guard and drops the trailing one. An alias mixing scripts takes
+the weakest guard of the scripts it contains, because it is read inside the
+text of its unspaced part, where 华为 Technologies的声明 offers the Latin edge
+no delimiter either.
+
+Dropping a guard trades a silent false negative for a visible false positive:
+unguarded 中国 also occurs inside 中国人 and across the seam of 美中国际. Those
+occurrences are emitted rather than suppressed, and each mention records the
+guards its alias supported plus whether a word character abuts the span. The
+adjacency flags are exactly the test a dropped guard would have applied, so
+the stricter reading stays reconstructable from the output.
+
+Two limits stay unhandled and named. Arabic and Hebrew space their words and
+are guarded here, but attached prefixes (و, ال, ה) hide a bare alias behind an
+unspaced particle; handling them would take the mirror of the Hangul
+asymmetry, and leaving them costs some occurrences rather than all of them.
+Scripts absent from the table below, such as Javanese, Balinese, and Yi, are
+treated as spaced and keep the structural zero described above.
+"""
 
 from __future__ import annotations
 
 import re
 from bisect import bisect_left
 from dataclasses import dataclass
+from functools import lru_cache
 
 from core.registry import ActorProfile, actor_profiles
 from interpretation.rhetorlint import Passage
 
 
-ACTOR_MENTION_VERSION = "ww3.actor-mentions/v1"
+# v2 guards an alias by the scripts it is written in, so a passage in an
+# unspaced script answers with mentions where v1 could answer only zero, and
+# every mention names the guard behind it. A reader comparing two runs needs
+# the contract to say which arithmetic produced the count.
+ACTOR_MENTION_VERSION = "ww3.actor-mentions/v2"
 MAX_MENTION_CANDIDATES_PER_PASSAGE = 4_096
 MAX_MENTIONS_PER_PASSAGE = 256
 MAX_MENTIONS_PER_OBSERVATION = 512
+MAX_CACHED_ALIAS_PATTERNS = 4_096
+
+MATCH_MODE_BOUNDARY_GUARDED = "word-boundary-guarded"
+MATCH_MODE_LEADING_GUARDED = "leading-boundary-guarded"
+MATCH_MODE_UNGUARDED = "unguarded-substring"
+
+# The mode is the single decision; the guards follow from it, so no alias can
+# be compiled behind a pair of guards no mode names.
+_GUARDS_BY_MODE = {
+    MATCH_MODE_BOUNDARY_GUARDED: (True, True),
+    MATCH_MODE_LEADING_GUARDED: (True, False),
+    MATCH_MODE_UNGUARDED: (False, False),
+}
+MATCH_MODES = tuple(_GUARDS_BY_MODE)
+
+# Ranges rather than script names, so a reviewer can check the table against
+# the Unicode charts. These scripts run words together, so a word character on
+# either side of an alias is the rule and neither guard can hold.
+_UNSPACED_RANGES = (
+    (0x0E00, 0x0EFF),    # Thai, Lao
+    (0x0F00, 0x0FFF),    # Tibetan
+    (0x1000, 0x109F),    # Myanmar
+    (0x1780, 0x17FF),    # Khmer
+    (0x19E0, 0x19FF),    # Khmer symbols
+    (0x2E80, 0x2FDF),    # CJK and Kangxi radicals
+    (0x3005, 0x3007),    # ideographic iteration and closing marks, 〇
+    (0x3021, 0x303B),    # Suzhou numerals and ideographic marks
+    (0x3040, 0x30FF),    # Hiragana, Katakana
+    (0x31F0, 0x31FF),    # Katakana phonetic extensions
+    (0x3400, 0x4DBF),    # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),    # CJK Unified Ideographs
+    (0xA9E0, 0xA9FF),    # Myanmar Extended-B
+    (0xAA60, 0xAA7F),    # Myanmar Extended-A
+    (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
+    (0xFF66, 0xFF9F),    # halfwidth Katakana
+    (0x1B000, 0x1B16F),  # Kana supplement and extended
+    (0x20000, 0x3FFFF),  # CJK ideograph planes 2 and 3
+)
+
+# Hangul is space-delimited between words, so its leading guard survives; a
+# particle attaches to the noun with no space, so its trailing guard cannot.
+_SUFFIX_BOUND_RANGES = (
+    (0x1100, 0x11FF),    # Hangul Jamo
+    (0x3130, 0x318F),    # Hangul Compatibility Jamo
+    (0xA960, 0xA97F),    # Hangul Jamo Extended-A
+    (0xAC00, 0xD7FF),    # Hangul syllables and Jamo Extended-B
+    (0xFFA0, 0xFFDC),    # halfwidth Jamo
+)
+
+_WORD_CHARACTER = re.compile(r"\w")
+
+
+def _in_ranges(character: str, ranges: tuple[tuple[int, int], ...]) -> bool:
+    """Report whether one character falls in an inclusive range table."""
+    point = ord(character)
+    return any(low <= point <= high for low, high in ranges)
+
+
+def _alias_match_mode(alias: str) -> str:
+    """Choose the strongest guard an alias's own scripts can satisfy."""
+    # Every character counts, not only the edges: a mixed alias sits inside the
+    # text of its unspaced part, where the delimiter its Latin edge asks for is
+    # one the surrounding script never writes.
+    if any(_in_ranges(character, _UNSPACED_RANGES) for character in alias):
+        return MATCH_MODE_UNGUARDED
+    if any(_in_ranges(character, _SUFFIX_BOUND_RANGES) for character in alias):
+        return MATCH_MODE_LEADING_GUARDED
+    return MATCH_MODE_BOUNDARY_GUARDED
+
+
+@lru_cache(maxsize=MAX_CACHED_ALIAS_PATTERNS)
+def _alias_pattern(alias: str, case_sensitive: bool) -> tuple[re.Pattern[str], str]:
+    """Compile one alias behind the guards its own characters support."""
+    # Keyed on the alias: the registry bounds how many aliases exist, nothing
+    # bounds how many passages they are scanned against.
+    mode = _alias_match_mode(alias)
+    leading, trailing = _GUARDS_BY_MODE[mode]
+    pattern = re.compile(
+        (r"(?<!\w)" if leading else "")
+        + re.escape(alias)
+        + (r"(?!\w)" if trailing else ""),
+        0 if case_sensitive else re.IGNORECASE,
+    )
+    return pattern, mode
+
+
+def _abuts_word_character(text: str, index: int) -> bool:
+    """Apply, as a record, the exact test a dropped guard would have made."""
+    return 0 <= index < len(text) and _WORD_CHARACTER.match(text, index) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,8 +154,12 @@ class ActorMention:
     actual: str
     start: int
     end: int
+    match_mode: str
+    word_character_before: bool
+    word_character_after: bool
 
     def as_dict(self) -> dict:
+        leading, trailing = _GUARDS_BY_MODE[self.match_mode]
         return {
             "actor_id": self.actor_id,
             "canonical_name": self.canonical_name,
@@ -37,6 +170,18 @@ class ActorMention:
                 "start": self.start,
                 "end": self.end,
                 "offset_encoding": "unicode-code-point",
+            },
+            # A consumer that cannot tell a guarded Latin match from an
+            # unguarded Han substring cannot weigh them apart, and a count it
+            # cannot interrogate is not evidence.
+            "match": {
+                "mode": self.match_mode,
+                "leading_guard": leading,
+                "trailing_guard": trailing,
+                "adjacent_word_character": {
+                    "before": self.word_character_before,
+                    "after": self.word_character_after,
+                },
             },
         }
 
@@ -49,9 +194,15 @@ class ActorMentionScan:
     truncated: bool
 
     def metadata(self) -> dict:
+        # Every mode is listed at zero, because a mode that matched nothing and
+        # a mode no registered alias could reach are different claims.
+        modes = dict.fromkeys(MATCH_MODES, 0)
+        for mention in self.mentions:
+            modes[mention.match_mode] += 1
         return {
             "contract": ACTOR_MENTION_VERSION,
             "mentions_emitted": len(self.mentions),
+            "match_modes": modes,
             "candidates_examined": self.candidates_examined,
             "passages_scanned": self.passages_scanned,
             "truncated": self.truncated,
@@ -60,20 +211,30 @@ class ActorMentionScan:
                 "mentions_per_passage": MAX_MENTIONS_PER_PASSAGE,
                 "mentions_per_observation": MAX_MENTIONS_PER_OBSERVATION,
             },
+            "scope": (
+                "Visible alias occurrences under the boundary guards each alias's own "
+                "characters can satisfy. An unguarded-substring mention may sit inside "
+                "a longer run of unspaced text; it is a visible occurrence, not a "
+                "claim that the actor is the subject of the passage. "
+                "adjacent_word_character reports what touches each side of the span."
+            ),
         }
 
 
 def _matches(profile: ActorProfile, passage: Passage):
     candidates = []
     for alias, case_sensitive in profile.aliases:
-        flags = 0 if case_sensitive else re.IGNORECASE
-        pattern = re.compile(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", flags)
+        # A zero-width alias would match between every pair of characters; the
+        # registry rejects one, a hand-built profile is not checked.
+        if not alias:
+            continue
+        pattern, mode = _alias_pattern(alias, case_sensitive)
         for match in pattern.finditer(passage.text):
-            candidates.append((match.start(), match.end(), match.group(0)))
+            candidates.append((match.start(), match.end(), match.group(0), mode))
     # Prefer the longest alias at a shared start and remove duplicate spans.
     candidates.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[1]))
     seen = set()
-    for start, end, actual in candidates:
+    for start, end, actual, mode in candidates:
         if (start, end) in seen:
             continue
         seen.add((start, end))
@@ -85,11 +246,17 @@ def _matches(profile: ActorProfile, passage: Passage):
             actual=actual,
             start=start,
             end=end,
+            match_mode=mode,
+            word_character_before=_abuts_word_character(passage.text, start - 1),
+            word_character_after=_abuts_word_character(passage.text, end),
         )
 
 
 def text_mentions_actor(actor_id: str, text: str) -> bool:
     """Use the same overlap-resolved aliases as casefile visibility."""
+    # An unguarded-substring occurrence counts as visible here. Refusing it
+    # would move the structural blind spot from the casefile into assessment
+    # validation, where the reader sees no span and no mode at all.
     if not isinstance(text, str) or not text:
         return False
     encoded = text.encode("utf-8")
@@ -178,7 +345,9 @@ def find_actor_mentions(passages: tuple[Passage, ...]) -> tuple[ActorMention, ..
 
 
 __all__ = [
-    "ACTOR_MENTION_VERSION", "MAX_MENTION_CANDIDATES_PER_PASSAGE",
+    "ACTOR_MENTION_VERSION", "MATCH_MODES", "MATCH_MODE_BOUNDARY_GUARDED",
+    "MATCH_MODE_LEADING_GUARDED", "MATCH_MODE_UNGUARDED",
+    "MAX_CACHED_ALIAS_PATTERNS", "MAX_MENTION_CANDIDATES_PER_PASSAGE",
     "MAX_MENTIONS_PER_OBSERVATION", "MAX_MENTIONS_PER_PASSAGE", "ActorMention",
     "ActorMentionScan", "find_actor_mentions", "scan_actor_mentions",
     "text_mentions_actor",

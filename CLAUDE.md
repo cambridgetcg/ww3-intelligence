@@ -67,7 +67,13 @@ or calls the model boundary.
 9. `interpretation/casefile.py` packages exact visible passages, source-host
    consistency, and bounded actor-alias spans. Actor visibility may be
    incomplete, so preserve per-observation scan metadata and aggregate status.
-   It does not infer intent or adjudicate truth.
+   It does not infer intent or adjudicate truth. An alias is matched under the
+   guard its own script can carry (`ww3.actor-mentions/v2`): word boundaries
+   where words are delimited, a leading boundary only where particles attach
+   without a space, and none where a script writes without spaces at all. Each
+   mention records which guard applied and whether a word character sits either
+   side, because an unguarded substring is a visible occurrence of the alias
+   and not a claim that the actor is the passage's subject.
 10. RhetorLint marks visible language only. It cannot establish truth,
    deception, credibility, intent, or actor attribution, and its `strip` output
    remains omitted to preserve evidential qualifiers. Configured
@@ -206,7 +212,18 @@ without explicit scope.
 ## Current limits
 
 - No cross-source event clustering, independence, or syndication graph.
-- Source and actor registries are finite, hand-curated, and English-only; there
+- Sources registered beyond the original English set ship
+  `collection_enabled: false` and say so in their own caveat: no endpoint here
+  has been fetched, so none is confirmed to exist or to serve what its entry
+  claims. A human verifies a feed and its canonical hosts before enabling it,
+  and `ingestion/` has not been exercised against a non-UTF-8 or non-English
+  response.
+- Actor aliases now carry native-script forms, so a mention can be seen in
+  text this framework could not previously see it in. Two limits remain named
+  rather than solved: scripts that attach prefixes to a noun (Arabic, Hebrew)
+  can still hide an occurrence behind the leading guard, and any script absent
+  from the unspaced-range table keeps the old structural blind spot.
+- Source and actor registries are finite, hand-curated, and were English-only; there
   is no live-verified official China adapter or multilingual/local-reporting
   layer.
 - Source/control-group counts are descriptive only; they do not establish

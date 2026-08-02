@@ -41,6 +41,10 @@ WRITER_ENTERED_SCOPE = (
 COLLECTION_STATE_MEANINGS = {
     "fresh": "a capture success was recorded within the expected interval",
     "stale": "no capture success was recorded within the expected interval",
+    # A feed answering with zero records completes its cycle exactly like a
+    # healthy quiet one, so the count of records parsed is the only thing that
+    # separates them.
+    "no-records": "cycles completed, but this collector parsed no records in them",
     "never-observed": "no capture success has ever been recorded for this key",
     "unknown": "the collector heartbeat could not be read for this key",
 }

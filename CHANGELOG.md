@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.3 — 2026-08-02
+
+- Match actor aliases under the guard their own script can carry, so a mention
+  in a language that writes without spaces is visible at all
+  (`ww3.actor-mentions/v2`). Every mention records which guard applied.
+- Carry native-script aliases for registered actors.
+- Register first-party publishers beyond the original English set, disabled and
+  saying in their own caveat that their endpoints are unverified.
+- Report a feed that completes its cycles while parsing no records, which until
+  now was indistinguishable from a healthy quiet one.
+- Distinguish a source held back by choice from one nobody has confirmed.
+
 ## 0.1.2 — 2026-07-26
 
 - Supervise the runtime's children instead of ending the deployment: a dead

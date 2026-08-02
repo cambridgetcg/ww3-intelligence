@@ -349,9 +349,14 @@ universal memory/wall-clock bound. HTTP reads are capped and timed; parsers
 still materialize each bounded response. Feed failures are reported by source
 and are not evidence that no event occurred.
 
-The active source and actor registries are finite, hand-curated, and currently
-English-only. There is no live-verified official China adapter or multilingual
-local-reporting layer yet. Assessment validation checks exact lineage and
+The active source registry is finite, hand-curated, and still entirely English:
+first-party publishers outside the original set are registered but disabled,
+because nothing here has fetched their endpoints to confirm they exist or serve
+what their entries claim. Actor aliases carry native-script forms and are
+matched under the guard each script can bear, so a mention is visible in text
+where it previously could not be seen — but a registered alias is only ever
+visibility, never power, and no live-verified official China adapter or
+multilingual local-reporting layer is collecting yet. Assessment validation checks exact lineage and
 contract structure; it cannot establish that an assessor chose the correct
 subject actor, claim kind, evidence effect, power description, or intent
 rationale.
