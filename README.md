@@ -151,6 +151,15 @@ cryptographic publisher authentication or proof that the registered collector
 fetched the record; the resulting publisher/control-group counts are not a
 corroboration result.
 
+Beside those counts, a casefile measures how much visible text its own records
+share with each other. That is deliberately the narrowest thing worth saying: a
+high measure does not establish that two records have a common origin, and a
+low one is not evidence that they are independent, since two newsrooms
+reporting one event in their own words — and a translation of a single wire
+story — both share almost no tokens. It exists because five outlets running one
+piece of copy otherwise present as five publishers and five control groups, and
+the reader is left to notice that alone.
+
 Actor matching is bounded and can be incomplete. Per-observation scan metadata
 and the casefile `actor_visibility_status` report truncation. Mention volume and
 emitted ordering are visibility in selected text, not a complete actor list or

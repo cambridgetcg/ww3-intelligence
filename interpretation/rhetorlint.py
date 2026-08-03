@@ -12,6 +12,15 @@ rule id, never by rewriting the engine's note.  Every withheld rule stays in
 the output with its reason and its withheld-mark count, because a silent
 filter would let a reader read "this rule was not applied" as "this rule
 found nothing" — a worse claim than the false mark it removes.
+
+The engine counts words by splitting on whitespace, which is the denominator
+the language it was written for supports and no denominator at all for a
+script that writes without spaces: a whole Chinese passage answers as one
+word, so a single mark in it reads as a hundred per hundred words.  Each
+density is therefore published only under the denominator its own passage's
+script can carry, a figure that does not apply is null rather than a number a
+reader would compare, and the summary folds each denominator on its own
+instead of averaging across two of them.
 """
 
 from __future__ import annotations
@@ -35,9 +44,11 @@ from core.settings import PROJECT_ROOT, get_setting
 
 
 # 0.2 withholds excluded rules from the marks, and therefore from the tell
-# counts.  The same passage answers with a smaller number than 0.1 gave it, so
-# a reader comparing two runs needs the contract to say which one it is.
-CONTRACT_VERSION = "ww3-rhetorlint/0.2"
+# counts.  0.3 states each density's denominator and withholds the figures that
+# denominator does not support.  The same passage answers differently under
+# each, so a reader comparing two runs needs the contract to say which one it
+# is.
+CONTRACT_VERSION = "ww3-rhetorlint/0.3"
 PASSAGE_TRANSFORM_VERSION = "visible-text-v1"
 MAX_PASSAGES = 8
 MAX_PASSAGE_BYTES = 16 * 1024
@@ -64,6 +75,61 @@ _CONFIGURED_EXCLUSION_REASON = (
     "Withheld by local RHETORLINT_EXCLUDED_RULES configuration; this bridge "
     "records no reviewed reason for it."
 )
+
+SCRIPT_MODE_SPACED = "space-delimited"
+SCRIPT_MODE_UNSPACED = "substantially-unspaced"
+DENSITY_BASIS_WORDS = "words"
+DENSITY_BASIS_CHARACTERS = "characters"
+
+# The script mode is the single decision; the denominator follows from it, so
+# no passage can be counted under a basis no mode names.
+_BASIS_BY_SCRIPT_MODE = {
+    SCRIPT_MODE_SPACED: DENSITY_BASIS_WORDS,
+    SCRIPT_MODE_UNSPACED: DENSITY_BASIS_CHARACTERS,
+}
+# Each basis carries its own denominator beside its own figure, because "per
+# 100" of two different units are two measurements: each reads against its own
+# kind and adds to nothing else.  Every basis a script mode maps to needs a
+# pair here.
+_BASIS_FIELDS = {
+    DENSITY_BASIS_WORDS: ("words", "per_100_words"),
+    DENSITY_BASIS_CHARACTERS: ("characters", "per_100_characters"),
+}
+DENSITY_BASES = tuple(_BASIS_FIELDS)
+
+# Ranges rather than script names, so a reviewer can check the table against
+# the Unicode charts.  These scripts run words together, so whitespace divides
+# a passage of them into a number that is not its word count.
+# `interpretation/actors.py` decides its alias guards from the same property
+# and carries the same table; the two must agree, or a passage can be
+# unguarded for mentions while its density claims to be word-delimited.
+UNSPACED_SCRIPT_RANGES = (
+    (0x0E00, 0x0EFF),    # Thai, Lao
+    (0x0F00, 0x0FFF),    # Tibetan
+    (0x1000, 0x109F),    # Myanmar
+    (0x1780, 0x17FF),    # Khmer
+    (0x19E0, 0x19FF),    # Khmer symbols
+    (0x2E80, 0x2FDF),    # CJK and Kangxi radicals
+    (0x3005, 0x3007),    # ideographic iteration and closing marks, 〇
+    (0x3021, 0x303B),    # Suzhou numerals and ideographic marks
+    (0x3040, 0x30FF),    # Hiragana, Katakana
+    (0x31F0, 0x31FF),    # Katakana phonetic extensions
+    (0x3400, 0x4DBF),    # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),    # CJK Unified Ideographs
+    (0xA9E0, 0xA9FF),    # Myanmar Extended-B
+    (0xAA60, 0xAA7F),    # Myanmar Extended-A
+    (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
+    (0xFF66, 0xFF9F),    # halfwidth Katakana
+    (0x1B000, 0x1B16F),  # Kana supplement and extended
+    (0x20000, 0x3FFFF),  # CJK ideograph planes 2 and 3
+)
+
+# A fifth of a passage's letters carrying no delimiter is enough that the
+# whitespace count is missing whole clauses rather than an odd compound.  Below
+# the line, an English headline quoting 中国 keeps a word count that still
+# describes it.  The counts and the threshold are published, so a reader who
+# would draw the line elsewhere can.
+UNSPACED_BASIS_RATIO = 0.2
 
 FAMILIES = {
     "manipulative-wording", "simplification", "distraction",
@@ -399,6 +465,97 @@ def _point(value: Any) -> dict[str, int]:
     return point
 
 
+def _in_unspaced_ranges(character: str) -> bool:
+    """Report whether one character falls in the unspaced range table."""
+    point = ord(character)
+    return any(low <= point <= high for low, high in UNSPACED_SCRIPT_RANGES)
+
+
+def script_profile(text: str) -> dict[str, Any]:
+    """Measure how much of a passage's letters whitespace cannot divide."""
+    # Letters only: punctuation and digits are shared between scripts and say
+    # nothing about whether the text around them is delimited.
+    script_characters = 0
+    unspaced_characters = 0
+    for character in text:
+        if not character.isalpha():
+            continue
+        script_characters += 1
+        if _in_unspaced_ranges(character):
+            unspaced_characters += 1
+    unspaced = (
+        script_characters > 0
+        and unspaced_characters >= script_characters * UNSPACED_BASIS_RATIO
+    )
+    return {
+        "mode": SCRIPT_MODE_UNSPACED if unspaced else SCRIPT_MODE_SPACED,
+        "script_characters": script_characters,
+        "unspaced_characters": unspaced_characters,
+        "unspaced_ratio_threshold": UNSPACED_BASIS_RATIO,
+    }
+
+
+def _per_100(tells: int, units: int) -> float | None:
+    """Round one figure, or withhold it where its denominator does not exist."""
+    if units <= 0:
+        return None
+    return round(tells / units * 100, 1)
+
+
+def _basis_units(source: dict[str, Any], basis: str) -> int:
+    """Return the denominator one basis counts in."""
+    if basis == DENSITY_BASIS_WORDS:
+        return source["whitespace_words"]
+    return source["chars_utf16"]
+
+
+def _passage_density(
+    tells: int, source: dict[str, Any], words_figure: float | None
+) -> dict[str, Any]:
+    """Publish one figure, under the denominator the passage's script carries."""
+    # A withheld figure is null and a real zero is 0.0, because "the applied
+    # rules marked nothing" and "this denominator does not describe this text"
+    # are different claims and a bare number states neither.  Both denominators
+    # are published beside their figures, so either is re-derivable.
+    basis = _BASIS_BY_SCRIPT_MODE[source["script"]["mode"]]
+    return {
+        "tells": tells,
+        "basis": basis,
+        "per_100_words": words_figure if basis == DENSITY_BASIS_WORDS else None,
+        "per_100_characters": (
+            _per_100(tells, source["chars_utf16"])
+            if basis == DENSITY_BASIS_CHARACTERS else None
+        ),
+    }
+
+
+def _summary_density(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fold passage densities inside each denominator and never across two."""
+    # An Observation can carry an English title beside a Chinese summary, and
+    # one mean over both would divide every mark by a denominator that counts
+    # only one of them.  Every basis is listed even at zero, because a basis no
+    # passage reached and a basis whose passages carried no mark are different
+    # claims.
+    folded = {}
+    for basis in DENSITY_BASES:
+        unit_field, ratio_field = _BASIS_FIELDS[basis]
+        counted = [item for item in results if item["density"]["basis"] == basis]
+        tells = sum(item["density"]["tells"] for item in counted)
+        units = sum(_basis_units(item["source"], basis) for item in counted)
+        folded[basis] = {
+            "passages": len(counted),
+            "tells": tells,
+            unit_field: units,
+            ratio_field: _per_100(tells, units),
+        }
+    return {
+        "comparable_across_passages": sum(
+            1 for entry in folded.values() if entry["passages"]
+        ) <= 1,
+        **folded,
+    }
+
+
 def _validate_result(value: Any, passage: Passage) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("rhetorlint") != "0.1":
         raise RhetorLintInvalidOutput()
@@ -469,10 +626,21 @@ def _validate_result(value: Any, passage: Passage) -> dict[str, Any]:
             "confidence": _finite_number(mark.get("confidence"), minimum=0, maximum=1),
             "level": level,
         })
+    # The engine's denominator is runs of non-whitespace, which is a word count
+    # only where a script writes its words apart, so the field says which one
+    # it counted and the script profile beside it says whether that is a word
+    # count of this passage.  The locale is the one the rules were applied
+    # under, never a reading of what this passage is written in.
+    normalized_source = {
+        "chars_utf16": source["chars"],
+        "whitespace_words": source["words"],
+        "rules_locale": locale,
+        "script": script_profile(passage.text),
+    }
     return {
         "rhetorlint": "0.1",
-        "source": {"chars_utf16": source["chars"], "words": source["words"], "locale": locale},
-        "density": {"tells": tells, "per_100_words": per100},
+        "source": normalized_source,
+        "density": _passage_density(tells, normalized_source, per100),
         "marks": normalized_marks,
         "engine": {
             "name": "@rhetorlint/core",
@@ -497,13 +665,15 @@ def _apply_exclusions(
         return {**result, "excluded_marks": {}}
     # Density describes the marks this bridge reports, so a reader can still
     # count them; the withheld tally beside it restores the engine's total.
-    words = result["source"]["words"]
+    # The recount stays under the basis the passage's script supports:
+    # withholding a rule changes the count, never the denominator under it.
     return {
         **result,
-        "density": {
-            "tells": len(kept),
-            "per_100_words": round(len(kept) / words * 100, 1) if words else 0,
-        },
+        "density": _passage_density(
+            len(kept),
+            result["source"],
+            _per_100(len(kept), result["source"]["whitespace_words"]),
+        ),
         "marks": kept,
         "excluded_marks": dict(sorted(withheld.items())),
     }
@@ -609,12 +779,12 @@ def analyze_observation_rhetoric(observation: Observation) -> dict[str, Any]:
     results = _run(runtime, passages)
     engine = _engine_identity(runtime, results)
     records = []
-    total_words = 0
+    reported = []
     total_marks = 0
     withheld_totals: dict[str, int] = {}
     for passage, result in zip(passages, results):
         result = _apply_exclusions(result, excluded)
-        total_words += result["source"]["words"]
+        reported.append(result)
         total_marks += result["density"]["tells"]
         for rule_id, count in result["excluded_marks"].items():
             withheld_totals[rule_id] = withheld_totals.get(rule_id, 0) + count
@@ -669,28 +839,35 @@ def analyze_observation_rhetoric(observation: Observation) -> dict[str, Any]:
         },
         "summary": {
             "passages": len(records),
-            "words": total_words,
             "matched_tells": total_marks,
-            "per_100_words": round(total_marks / total_words * 100, 1) if total_words else 0,
             "excluded_marks": sum(withheld_totals.values()),
+            "density": _summary_density(reported),
         },
         "passages": records,
         "scope": (
             "Visible language-pattern annotations only; not intent, deception, truth, "
             "credibility, corroboration, or actor attribution. Zero matches means only "
-            "that the applied English rules matched nothing; rules named in "
-            "runtime.excluded_rules were withheld at this bridge and their marks are "
-            "counted, not shown. RhetorLint strip is omitted to preserve evidential "
-            "qualifiers."
+            "that the applied English rules matched nothing, and those rules are "
+            "written for English, so a passage in another script is scanned by rules "
+            "that do not describe it; rules named in runtime.excluded_rules were "
+            "withheld at this bridge and their marks are counted, not shown. A density "
+            "is reported only under the denominator its passage's script supports, so "
+            "a null figure states that the denominator does not describe the text and "
+            "is not a count of zero; figures are comparable only within one basis. "
+            "RhetorLint strip is omitted to preserve evidential qualifiers."
         ),
     }
 
 
 __all__ = [
-    "CONTRACT_VERSION", "DEFAULT_EXCLUDED_RULES", "NoAnalyzableText", "Passage",
-    "RhetorLintConfigInvalid", "RhetorLintError", "RhetorLintInvalidOutput",
-    "RhetorLintOutputLimit", "RhetorLintPackUnrecognized", "RhetorLintTimeout",
+    "CONTRACT_VERSION", "DEFAULT_EXCLUDED_RULES", "DENSITY_BASES",
+    "DENSITY_BASIS_CHARACTERS", "DENSITY_BASIS_WORDS", "NoAnalyzableText",
+    "Passage", "RhetorLintConfigInvalid", "RhetorLintError",
+    "RhetorLintInvalidOutput", "RhetorLintOutputLimit",
+    "RhetorLintPackUnrecognized", "RhetorLintTimeout",
     "RhetorLintRuntimeChanged", "RhetorLintUnavailable", "RulesPack",
+    "SCRIPT_MODE_SPACED", "SCRIPT_MODE_UNSPACED",
+    "UNSPACED_BASIS_RATIO", "UNSPACED_SCRIPT_RANGES",
     "analyze_observation_rhetoric", "discover_runtime", "excluded_rule_ids",
-    "extract_passages",
+    "extract_passages", "script_profile",
 ]

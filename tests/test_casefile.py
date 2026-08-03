@@ -6,12 +6,22 @@ from core.observations import get_or_create_observation
 from core.db import Observation
 from interpretation.actors import MAX_MENTIONS_PER_OBSERVATION, text_mentions_actor
 from interpretation.casefile import CASEFILE_VERSION, build_casefile, casefile_fingerprint
+from interpretation.shared_text import MAX_COMPARED_OBSERVATIONS, SHARED_TEXT_VERSION
 
 
 _SOURCE_URLS = {
     "un_press": "https://press.un.org/en/example",
     "bbc_world": "https://www.bbc.co.uk/news/example",
+    "aljazeera": "https://www.aljazeera.com/news/example",
+    "dw_world": "https://www.dw.com/en/example",
+    "lemonde": "https://www.lemonde.fr/international/example",
 }
+
+_WIRE_COPY = (
+    "The Security Council met on Tuesday to discuss the ceasefire proposal, "
+    "diplomats said, after three days of talks in Geneva that produced no "
+    "agreement on monitoring arrangements."
+)
 
 
 def _observation(source, source_record_id, title, summary):
@@ -139,6 +149,79 @@ def test_casefile_fingerprint_binds_immutable_evidence_metadata():
 
     assert first.content_hash == second.content_hash
     assert casefile_fingerprint([first]) != casefile_fingerprint([second])
+
+
+def test_casefile_measures_shared_text_beside_the_publisher_counts():
+    outlets = ["bbc_world", "aljazeera", "dw_world", "lemonde"]
+    observations = [
+        _observation(source, f"wire-{source}", "Council meets over ceasefire", _WIRE_COPY)
+        for source in outlets
+    ]
+
+    diversity = build_casefile(observations)["source_diversity"]
+    shared = diversity["shared_visible_text"]
+
+    assert len(diversity["known_editorial_control_groups"]) == 4
+    assert shared["contract"] == SHARED_TEXT_VERSION
+    assert shared["pairs_compared"] == 6
+    assert shared["pairs_reported"] == 6
+    assert {tuple(pair["observation_ids"]) for pair in shared["pairs"]} == {
+        (first.id, second.id)
+        for index, first in enumerate(observations)
+        for second in observations[index + 1:]
+    }
+    assert all(pair["containment"] == 1.0 for pair in shared["pairs"])
+    assert shared["status"] == "complete"
+    assert "shared_visible_text measures" in diversity["scope"]
+
+
+def test_casefile_shared_text_names_only_the_passages_it_compared():
+    observation = _observation(
+        "un_press", "shared-single", "Council meets over ceasefire", _WIRE_COPY,
+    )
+
+    value = build_casefile([observation])
+    shared = value["source_diversity"]["shared_visible_text"]
+    record = shared["records"][0]
+
+    assert shared["pairs_compared"] == 0
+    assert shared["pairs"] == []
+    assert record["passage_ids"] == [
+        item["passage_id"] for item in value["observations"][0]["passages"]
+    ]
+    assert value["contracts"]["shared_text"] == SHARED_TEXT_VERSION
+
+
+def test_casefile_shared_text_reports_the_observations_it_left_out():
+    observations = [
+        _observation("un_press", f"shared-cap-{index}", "Council meets", _WIRE_COPY)
+        for index in range(MAX_COMPARED_OBSERVATIONS + 1)
+    ]
+
+    shared = build_casefile(observations)["source_diversity"]["shared_visible_text"]
+
+    assert shared["observations_not_compared"] == [observations[-1].id]
+    assert shared["bounds"]["caps_hit"] == ["observation_cap"]
+    assert shared["status"] == "bounded"
+
+
+def test_casefile_fingerprint_ignores_shared_text_parameters(monkeypatch):
+    first = _observation("un_press", "fingerprint-shared-a", "Council", _WIRE_COPY)
+    second = _observation("bbc_world", "fingerprint-shared-b", "Council", _WIRE_COPY)
+
+    baseline = build_casefile([first, second])
+    monkeypatch.setattr("interpretation.shared_text.SHINGLE_TOKENS", 3)
+    retuned = build_casefile([first, second])
+
+    # A tuned parameter must move the measure and leave the fingerprint alone,
+    # or every assessment already written against these records fails
+    # revalidation the moment the threshold is argued with.
+    assert (
+        retuned["source_diversity"]["shared_visible_text"]
+        != baseline["source_diversity"]["shared_visible_text"]
+    )
+    assert retuned["fingerprint_sha256"] == baseline["fingerprint_sha256"]
+    assert baseline["fingerprint_sha256"] == casefile_fingerprint([first, second])
 
 
 def test_actor_mentions_prefer_longest_identity_and_are_bounded():

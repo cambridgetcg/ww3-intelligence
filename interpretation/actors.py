@@ -27,6 +27,27 @@ guards its alias supported plus whether a word character abuts the span. The
 adjacency flags are exactly the test a dropped guard would have applied, so
 the stricter reading stays reconstructable from the output.
 
+The same silence runs one layer below the guards. A publisher may serve
+러시아는 말했다 as eight code points or, from a macOS filesystem or a
+decomposing CMS, as eighteen; the bytes differ, every reader sees one
+sentence, and an alias compiled from one spelling answers zero for the other
+exactly as a passage naming nobody does. A passage cannot be normalized to
+meet the alias, because its offsets are the evidence a casefile quotes and a
+decomposed copy is a different length. So the alias is expanded instead, into
+the canonically equivalent spellings of the same characters, and each is
+searched against the text precisely as captured. Every mention names the spelling that matched,
+because an alias found in a form the registry does not hold is a fact about
+the record and not about the actor.
+
+Reaching decomposed text also puts the guards within reach of the marks it
+carries, and `\w` matches no mark, so a guard left to the pattern alone would
+read the diacritic in Hà as a word delimiter and hand back Ha. A guard is
+therefore a predicate over what abuts the span, applied whether or not the
+pattern could express it. The mirror case is not solved: a Hangul mention
+keeps no trailing guard, so a decomposed passage can end a span before a
+final Jamo that belongs to its syllable, which the adjacency flag records as
+the word character it is.
+
 Two limits stay unhandled and named. Arabic and Hebrew space their words and
 are guarded here, but attached prefixes (و, ال, ה) hide a bare alias behind an
 unspaced particle; handling them would take the mirror of the Hangul
@@ -38,19 +59,22 @@ treated as spaced and keep the structural zero described above.
 from __future__ import annotations
 
 import re
+import unicodedata
 from bisect import bisect_left
 from dataclasses import dataclass
 from functools import lru_cache
 
-from core.registry import ActorProfile, actor_profiles
+from core.registry import ALIAS_FORMS, ActorProfile, actor_profiles
 from interpretation.rhetorlint import Passage
 
 
 # v2 guards an alias by the scripts it is written in, so a passage in an
 # unspaced script answers with mentions where v1 could answer only zero, and
-# every mention names the guard behind it. A reader comparing two runs needs
-# the contract to say which arithmetic produced the count.
-ACTOR_MENTION_VERSION = "ww3.actor-mentions/v2"
+# every mention names the guard behind it. v3 searches each canonically
+# equivalent spelling of an alias, so decomposed text answers where v2 could
+# answer only zero. Both changes move counts upward, and a reader comparing
+# two runs needs the contract to say which arithmetic produced them.
+ACTOR_MENTION_VERSION = "ww3.actor-mentions/v3"
 MAX_MENTION_CANDIDATES_PER_PASSAGE = 4_096
 MAX_MENTIONS_PER_PASSAGE = 256
 MAX_MENTIONS_PER_OBSERVATION = 512
@@ -126,9 +150,12 @@ def _alias_match_mode(alias: str) -> str:
 
 @lru_cache(maxsize=MAX_CACHED_ALIAS_PATTERNS)
 def _alias_pattern(alias: str, case_sensitive: bool) -> tuple[re.Pattern[str], str]:
-    """Compile one alias behind the guards its own characters support."""
-    # Keyed on the alias: the registry bounds how many aliases exist, nothing
-    # bounds how many passages they are scanned against.
+    """Compile one alias spelling behind the guards its characters support."""
+    # Keyed on the spelling: the registry bounds how many aliases exist and an
+    # expansion is bounded per alias, but nothing bounds how many passages they
+    # are scanned against. The mode follows the spelling rather than the
+    # registered alias, because decomposing Hangul yields Jamo and decomposing
+    # a Latin letter yields a mark its own guard must be chosen for.
     mode = _alias_match_mode(alias)
     leading, trailing = _GUARDS_BY_MODE[mode]
     pattern = re.compile(
@@ -142,7 +169,16 @@ def _alias_pattern(alias: str, case_sensitive: bool) -> tuple[re.Pattern[str], s
 
 def _abuts_word_character(text: str, index: int) -> bool:
     """Apply, as a record, the exact test a dropped guard would have made."""
-    return 0 <= index < len(text) and _WORD_CHARACTER.match(text, index) is not None
+    if not 0 <= index < len(text):
+        return False
+    # A mark exists only because a base character precedes it, so a position
+    # holding one is inside a written word. `\w` matches no mark at all, which
+    # is why `(?<!\w)Ha(?!\w)` reads decomposed Hà as a delimited word and a
+    # guard cannot be left to the pattern alone.
+    return (
+        _WORD_CHARACTER.match(text, index) is not None
+        or unicodedata.category(text[index]).startswith("M")
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +191,7 @@ class ActorMention:
     start: int
     end: int
     match_mode: str
+    alias_form: str
     word_character_before: bool
     word_character_after: bool
 
@@ -173,9 +210,12 @@ class ActorMention:
             },
             # A consumer that cannot tell a guarded Latin match from an
             # unguarded Han substring cannot weigh them apart, and a count it
-            # cannot interrogate is not evidence.
+            # cannot interrogate is not evidence. alias_form says whether the
+            # span holds the registered characters or an equivalent spelling
+            # of them; the span itself indexes the passage as captured.
             "match": {
                 "mode": self.match_mode,
+                "alias_form": self.alias_form,
                 "leading_guard": leading,
                 "trailing_guard": trailing,
                 "adjacent_word_character": {
@@ -194,15 +234,18 @@ class ActorMentionScan:
     truncated: bool
 
     def metadata(self) -> dict:
-        # Every mode is listed at zero, because a mode that matched nothing and
-        # a mode no registered alias could reach are different claims.
+        # Every mode and spelling is listed at zero, because one that matched
+        # nothing and one no registered alias could reach are different claims.
         modes = dict.fromkeys(MATCH_MODES, 0)
+        forms = dict.fromkeys(ALIAS_FORMS, 0)
         for mention in self.mentions:
             modes[mention.match_mode] += 1
+            forms[mention.alias_form] += 1
         return {
             "contract": ACTOR_MENTION_VERSION,
             "mentions_emitted": len(self.mentions),
             "match_modes": modes,
+            "alias_forms": forms,
             "candidates_examined": self.candidates_examined,
             "passages_scanned": self.passages_scanned,
             "truncated": self.truncated,
@@ -213,28 +256,41 @@ class ActorMentionScan:
             },
             "scope": (
                 "Visible alias occurrences under the boundary guards each alias's own "
-                "characters can satisfy. An unguarded-substring mention may sit inside "
-                "a longer run of unspaced text; it is a visible occurrence, not a "
-                "claim that the actor is the subject of the passage. "
-                "adjacent_word_character reports what touches each side of the span."
+                "characters can satisfy, searched in every canonically equivalent "
+                "spelling of the alias against the passage exactly as captured. An "
+                "unguarded-substring mention may sit inside a longer run of unspaced "
+                "text; it is a visible occurrence, not a claim that the actor is the "
+                "subject of the passage. adjacent_word_character reports what touches "
+                "each side of the span, and alias_form which spelling matched."
             ),
         }
 
 
 def _matches(profile: ActorProfile, passage: Passage):
     candidates = []
-    for alias, case_sensitive in profile.aliases:
+    for alias in profile.alias_forms:
         # A zero-width alias would match between every pair of characters; the
         # registry rejects one, a hand-built profile is not checked.
-        if not alias:
+        if not alias.text:
             continue
-        pattern, mode = _alias_pattern(alias, case_sensitive)
+        pattern, mode = _alias_pattern(alias.text, alias.case_sensitive)
+        leading, trailing = _GUARDS_BY_MODE[mode]
         for match in pattern.finditer(passage.text):
-            candidates.append((match.start(), match.end(), match.group(0), mode))
+            # The guard a mode declares is enforced here as well as compiled,
+            # because the pattern's `\w` cannot see the marks a decomposed
+            # passage carries. A mode that declares no guard keeps none, and
+            # its mentions are labelled rather than suppressed.
+            if (leading and _abuts_word_character(passage.text, match.start() - 1)) or (
+                trailing and _abuts_word_character(passage.text, match.end())
+            ):
+                continue
+            candidates.append(
+                (match.start(), match.end(), match.group(0), mode, alias.form)
+            )
     # Prefer the longest alias at a shared start and remove duplicate spans.
     candidates.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[1]))
     seen = set()
-    for start, end, actual, mode in candidates:
+    for start, end, actual, mode, form in candidates:
         if (start, end) in seen:
             continue
         seen.add((start, end))
@@ -247,6 +303,7 @@ def _matches(profile: ActorProfile, passage: Passage):
             start=start,
             end=end,
             match_mode=mode,
+            alias_form=form,
             word_character_before=_abuts_word_character(passage.text, start - 1),
             word_character_after=_abuts_word_character(passage.text, end),
         )

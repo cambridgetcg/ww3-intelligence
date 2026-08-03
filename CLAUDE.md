@@ -68,12 +68,16 @@ or calls the model boundary.
    consistency, and bounded actor-alias spans. Actor visibility may be
    incomplete, so preserve per-observation scan metadata and aggregate status.
    It does not infer intent or adjudicate truth. An alias is matched under the
-   guard its own script can carry (`ww3.actor-mentions/v2`): word boundaries
+   guard its own script can carry (`ww3.actor-mentions/v3`): word boundaries
    where words are delimited, a leading boundary only where particles attach
    without a space, and none where a script writes without spaces at all. Each
    mention records which guard applied and whether a word character sits either
    side, because an unguarded substring is a visible occurrence of the alias
-   and not a claim that the actor is the passage's subject.
+   and not a claim that the actor is the passage's subject. The alias is
+   expanded to its canonically equivalent spellings and matched against the
+   text as stored; the text is never normalised to meet the alias, because a
+   span that indexes a normalised copy does not index the record it quotes.
+   Each mention names the spelling that matched.
 10. RhetorLint marks visible language only. It cannot establish truth,
    deception, credibility, intent, or actor attribution, and its `strip` output
    remains omitted to preserve evidential qualifiers. Configured
@@ -211,7 +215,12 @@ without explicit scope.
 
 ## Current limits
 
-- No cross-source event clustering, independence, or syndication graph.
+- No cross-source event clustering, independence, or syndication graph. A
+  casefile measures shared visible text between its own records
+  (`ww3.shared-text/v1`) and reports the arithmetic; it does not establish a
+  shared origin where the measure is high, and a low measure is not evidence
+  of independence — independent reporting of one event, and a translation of
+  one wire story, both share few tokens.
 - Sources registered beyond the original English set ship
   `collection_enabled: false` and say so in their own caveat: no endpoint here
   has been fetched, so none is confirmed to exist or to serve what its entry

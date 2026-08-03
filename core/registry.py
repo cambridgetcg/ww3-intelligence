@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -42,6 +43,56 @@ _HOST = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 )
 
+ALIAS_FORM_AS_REGISTERED = "as-registered"
+ALIAS_FORM_NFC = "nfc"
+ALIAS_FORM_NFD = "nfd"
+# Canonical equivalence only, so an expansion is at most three spellings of the
+# same characters. NFKC is refused twice over: it folds ﬁ, ｕｓ, and ① onto
+# characters the registry never declared, which is a compatibility judgement
+# and not an identity; and it is one-way, so folding an alias cannot reach the
+# full-width text a publisher served. Only folding the passage could, and a
+# passage's offsets are the evidence a casefile quotes.
+ALIAS_FORMS = (ALIAS_FORM_AS_REGISTERED, ALIAS_FORM_NFC, ALIAS_FORM_NFD)
+
+
+@dataclass(frozen=True, slots=True)
+class AliasForm:
+    text: str
+    case_sensitive: bool
+    form: str
+
+
+def alias_identity_key(text: str) -> str:
+    """Fold case and canonical spelling into one comparable alias identity."""
+    # Canonical caseless matching: a composed alias and its decomposed twin
+    # render identically and expand to overlapping spellings, so anything
+    # deciding whether two aliases are one identity must not see two.
+    return unicodedata.normalize(
+        "NFD", unicodedata.normalize("NFD", text).casefold()
+    )
+
+
+def expand_alias_forms(aliases: tuple[tuple[str, bool], ...]) -> tuple[AliasForm, ...]:
+    """Expand each alias into the equivalent spellings it can be served in."""
+    # The alias moves to meet the text, never the text to meet the alias:
+    # captured content is immutable and its offsets index it as stored, so a
+    # normalized copy of a passage would report spans into a record that does
+    # not exist. Derived per profile rather than per passage.
+    forms: list[AliasForm] = []
+    for text, case_sensitive in aliases:
+        spellings: dict[str, str] = {}
+        for name, spelling in (
+            (ALIAS_FORM_AS_REGISTERED, text),
+            (ALIAS_FORM_NFC, unicodedata.normalize("NFC", text)),
+            (ALIAS_FORM_NFD, unicodedata.normalize("NFD", text)),
+        ):
+            spellings.setdefault(spelling, name)
+        forms.extend(
+            AliasForm(text=spelling, case_sensitive=case_sensitive, form=name)
+            for spelling, name in spellings.items()
+        )
+    return tuple(forms)
+
 
 @dataclass(frozen=True, slots=True)
 class ActorProfile:
@@ -49,8 +100,11 @@ class ActorProfile:
     canonical_name: str
     kind: str
     aliases: tuple[tuple[str, bool], ...]
+    alias_forms: tuple[AliasForm, ...]
 
     def as_dict(self) -> dict:
+        # Only the registered alias is published. The expansion is a matching
+        # surface, not a claim that this registry holds all three spellings.
         return {
             "actor_id": self.actor_id,
             "canonical_name": self.canonical_name,
@@ -173,7 +227,7 @@ def actor_profiles() -> tuple[ActorProfile, ...]:
         raise RuntimeError("actor registry exceeds entry limit")
     output = []
     ids = set()
-    aliases: list[tuple[str, bool]] = []
+    aliases: list[tuple[str, str, bool]] = []
     for index, raw in enumerate(payload["actors"]):
         path = f"actors[{index}]"
         if not isinstance(raw, dict):
@@ -195,19 +249,31 @@ def actor_profiles() -> tuple[ActorProfile, ...]:
                 alias, f"{path}.aliases[{alias_index}]", {"text", "case_sensitive"}
             )
             alias_text = _text(alias.get("text"), f"{path}.aliases[{alias_index}].text", 200)
+            # Two spellings of one name expand to overlapping patterns, so a
+            # collision the raw comparison could not see is still a collision:
+            # the check compares identities, and the case-sensitive escape
+            # needs a difference in characters rather than in spelling.
+            identity = alias_identity_key(alias_text)
+            spelling = unicodedata.normalize("NFD", alias_text)
             if any(
-                alias_text.casefold() == existing_text.casefold()
-                and not (alias["case_sensitive"] and existing_case and alias_text != existing_text)
-                for existing_text, existing_case in aliases
+                identity == existing_identity
+                and not (
+                    alias["case_sensitive"]
+                    and existing_case
+                    and spelling != existing_spelling
+                )
+                for existing_identity, existing_spelling, existing_case in aliases
             ):
                 raise RuntimeError(f"ambiguous actor alias: {alias_text}")
-            aliases.append((alias_text, alias["case_sensitive"]))
+            aliases.append((identity, spelling, alias["case_sensitive"]))
             parsed_aliases.append((alias_text, alias["case_sensitive"]))
+        profile_aliases = tuple(parsed_aliases)
         output.append(ActorProfile(
             actor_id=actor_id,
             canonical_name=_text(raw.get("canonical_name"), f"{path}.canonical_name", 200),
             kind=_text(raw.get("kind"), f"{path}.kind", 100),
-            aliases=tuple(parsed_aliases),
+            aliases=profile_aliases,
+            alias_forms=expand_alias_forms(profile_aliases),
         ))
     return tuple(output)
 
@@ -370,9 +436,10 @@ def registry_artifact_sha256() -> dict[str, str]:
 
 
 __all__ = [
-    "ACTOR_CONTRACT", "SOURCE_CONTRACT", "SOURCE_IDENTITY_CONTRACT", "MAX_ACTORS",
-    "MAX_REGISTRY_BYTES", "MAX_SOURCES", "ActorProfile", "SourceProfile",
-    "actor_profiles", "get_actor_profile", "get_source_profile", "registry_payload",
-    "registry_artifact_sha256", "rss_source_profiles", "source_identity_context",
-    "source_profiles",
+    "ACTOR_CONTRACT", "ALIAS_FORMS", "ALIAS_FORM_AS_REGISTERED", "ALIAS_FORM_NFC",
+    "ALIAS_FORM_NFD", "SOURCE_CONTRACT", "SOURCE_IDENTITY_CONTRACT", "MAX_ACTORS",
+    "MAX_REGISTRY_BYTES", "MAX_SOURCES", "ActorProfile", "AliasForm", "SourceProfile",
+    "actor_profiles", "alias_identity_key", "expand_alias_forms", "get_actor_profile",
+    "get_source_profile", "registry_payload", "registry_artifact_sha256",
+    "rss_source_profiles", "source_identity_context", "source_profiles",
 ]

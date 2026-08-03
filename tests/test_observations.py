@@ -1,12 +1,20 @@
 from datetime import datetime
 import json
+import unicodedata
 
 import pytest
 
 from peewee import IntegrityError
 
 from core.db import AnalysisRun, Event, Observation, migrate_schema
-from core.observations import get_or_create_observation, normalize_leaf, observation_identity
+from core.observations import (
+    compute_content_equivalence_key,
+    compute_content_hash,
+    compute_dedupe_key,
+    get_or_create_observation,
+    normalize_leaf,
+    observation_identity,
+)
 
 
 def _leaf(**overrides):
@@ -232,3 +240,80 @@ def test_observation_rejects_oversized_source_material(monkeypatch):
     monkeypatch.setattr("core.observations.MAX_RAW_TEXT_BYTES", 3)
     with pytest.raises(ValueError, match="raw_text exceeds"):
         normalize_leaf(_leaf(raw_text="four"))
+
+
+def test_stored_identity_of_an_ascii_record_is_pinned_to_its_shipped_digests():
+    raw_text = '{"title":"A verified test report"}'
+    content_hash = compute_content_hash(raw_text)
+
+    normalized = normalize_leaf(_leaf())
+
+    # Pinned, not derived: 4,588 stored observations were keyed by exactly
+    # these functions, and a digest that moves makes every unchanged record
+    # fetched afterwards look like a new content revision.
+    assert content_hash == (
+        "af14fb9acc4a7564c860ea10209dcca3c9522d4f4fbcc4246ba414271c4deeec"
+    )
+    assert compute_dedupe_key(
+        source="example-feed", type="news", content_hash=content_hash,
+    ) == "fe6e03509d4f8915ea372bf326b349162bf17061ffdb615a95d7d985ad38cf3e"
+    assert compute_dedupe_key(
+        source="example-feed", type="news", content_hash=content_hash,
+        source_record_id="record-1",
+    ) == "d75f9589dfd4fe531d6159edb52f02a4207f4eb17e5c2a7831c37055725ccca1"
+    assert normalized["content_hash"] == content_hash
+    assert normalized["dedupe_key"] == (
+        "fe6e03509d4f8915ea372bf326b349162bf17061ffdb615a95d7d985ad38cf3e"
+    )
+
+
+def test_captured_content_is_stored_byte_identical_to_what_arrived():
+    decomposed = unicodedata.normalize("NFD", '{"title":"러시아 Türkiye"}')
+    composed = unicodedata.normalize("NFC", decomposed)
+
+    observation, _ = get_or_create_observation(_leaf(raw_text=decomposed))
+
+    stored = Observation.get_by_id(observation.id)
+    assert stored.raw_text == decomposed
+    assert stored.raw_text.encode("utf-8") == decomposed.encode("utf-8")
+    assert stored.raw_text != composed
+    assert stored.content_hash == compute_content_hash(decomposed)
+
+
+def test_two_normalizations_stay_two_records_and_two_identities():
+    decomposed = unicodedata.normalize("NFD", '{"title":"Türkiye"}')
+    composed = unicodedata.normalize("NFC", decomposed)
+
+    first, first_created = get_or_create_observation(_leaf(raw_text=composed))
+    second, second_created = get_or_create_observation(_leaf(raw_text=decomposed))
+
+    # Not a defect to fix by normalizing: identity is the bytes a publisher
+    # served, and rewriting them would rewrite the evidence.
+    assert (first_created, second_created) == (True, True)
+    assert first.content_hash != second.content_hash
+    assert first.dedupe_key != second.dedupe_key
+
+
+def test_content_equivalence_is_a_signal_beside_identity_and_never_inside_it():
+    decomposed = unicodedata.normalize("NFD", '{"title":"Türkiye"}')
+    composed = unicodedata.normalize("NFC", decomposed)
+    plain = '{"title":"A verified test report"}'
+
+    equivalence = compute_content_equivalence_key(decomposed)
+
+    assert equivalence == compute_content_equivalence_key(composed)
+    assert compute_content_equivalence_key(plain) != compute_content_equivalence_key(
+        '{"title":"A different report"}'
+    )
+    # Domain-separated, so an equivalence digest can never be read as, or
+    # substituted for, the identity of an already-stored record.
+    assert equivalence != compute_content_hash(composed)
+    assert compute_content_equivalence_key(plain) != compute_content_hash(plain)
+    # And it reaches nothing that keys storage.
+    assert "equivalence" not in repr(normalize_leaf(_leaf()))
+    assert set(normalize_leaf(_leaf(raw_text=decomposed))) == set(
+        normalize_leaf(_leaf(raw_text=composed))
+    )
+    assert normalize_leaf(_leaf(raw_text=decomposed))["dedupe_key"] != normalize_leaf(
+        _leaf(raw_text=composed)
+    )["dedupe_key"]

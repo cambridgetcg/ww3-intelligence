@@ -26,6 +26,7 @@ from interpretation.rhetorlint import (
     analyze_observation_rhetoric,
     extract_passages,
 )
+from interpretation.shared_text import SHARED_TEXT_VERSION, shared_visible_text
 
 
 CASEFILE_VERSION = "ww3.casefile/v1"
@@ -57,6 +58,11 @@ def _reload_stored_observations(observations: Iterable[Observation]) -> list[Obs
     return [rows[item] for item in ids]
 
 
+# The fingerprint binds immutable capture metadata and the contracts that read
+# it, and `interpretation/assessment.py` recomputes it from stored rows before
+# accepting an assessment. A derived measure whose parameters are meant to be
+# argued with must therefore stay out of it: retuning a threshold would
+# otherwise invalidate every assessment already written against these records.
 def _fingerprint_snapshots(
     observations: list[dict],
     registry_artifacts_sha256: dict[str, str],
@@ -126,6 +132,7 @@ def build_casefile(
 
     records = []
     fingerprint_observations = []
+    compared_passages = []
     source_ids = set()
     control_groups = set()
     content_roles = set()
@@ -174,6 +181,7 @@ def build_casefile(
             if trusted_context and source_context["publisher_actor_id"] else None
         )
         passages = extract_passages(observation)
+        compared_passages.append((observation.id, passages))
         mention_scan = scan_actor_mentions(passages)
         mentions = mention_scan.mentions
         if mention_scan.truncated:
@@ -293,6 +301,7 @@ def build_casefile(
             "passages": PASSAGE_TRANSFORM_VERSION,
             "projection": PROJECTION_VERSION,
             "assessment": "ww3.assessment/v1",
+            "shared_text": SHARED_TEXT_VERSION,
         },
         "registry_artifacts_sha256": registry_hashes,
         "observation_ids": ids,
@@ -304,11 +313,19 @@ def build_casefile(
             "claimed_content_roles": sorted(claimed_content_roles),
             "known_editorial_control_groups": sorted(control_groups),
             "unknown_lineage_source_ids": sorted(unknown_sources),
+            # The counts above and the measure below belong together: a reader
+            # meeting "five publishers" here meets, in the same object, how much
+            # visible text those five records hold in common.
+            "shared_visible_text": shared_visible_text(compared_passages),
             "scope": (
                 "Only HTTPS canonical-host-consistent records enter known control-group "
                 "counts. Host consistency is not publisher authentication. These are still "
                 "publication-context counts, not independent corroboration; different "
-                "publishers may share a wire, quote one origin, or repeat a claim."
+                "publishers may share a wire, quote one origin, or repeat a claim. "
+                "shared_visible_text measures how much text these records share so that "
+                "possibility is checkable rather than only stated; it establishes neither "
+                "a shared origin where it measures much nor independence where it "
+                "measures nothing."
             ),
         },
         "observations": records,

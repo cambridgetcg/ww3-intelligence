@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import unicodedata
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -19,8 +20,11 @@ from core.text_safety import contains_unsafe_controls
 
 UTC = timezone.utc
 MAX_RAW_TEXT_BYTES = 2 * 1024 * 1024
+CONTENT_EQUIVALENCE_VERSION = "ww3.content-equivalence/v1"
 
 __all__ = [
+    "CONTENT_EQUIVALENCE_VERSION",
+    "compute_content_equivalence_key",
     "compute_content_hash",
     "compute_dedupe_key",
     "get_or_create_observation",
@@ -105,7 +109,29 @@ def _stable_text(value: Any) -> str:
 def compute_content_hash(raw_text: Any) -> str:
     """Return the SHA-256 hash of the exact text stored as source material."""
 
+    # Hashes the bytes a publisher served, unnormalized. Every stored
+    # observation was keyed this way, so altering this function would make each
+    # unchanged record fetched afterwards look like a new content revision.
     return hashlib.sha256(_stable_text(raw_text).encode("utf-8")).hexdigest()
+
+
+def compute_content_equivalence_key(raw_text: Any) -> str:
+    """Return a canonical-equivalence digest of text that is stored verbatim.
+
+    This reports only that two captured texts render as the same characters
+    under Unicode canonical equivalence. It is not identity: it must never key
+    deduplication, revision linkage, or storage, and it is never compared with
+    ``content_hash``.
+    """
+
+    # Domain-separated so the two digests cannot collide even for text already
+    # composed, because a value that could be mistaken for a content hash could
+    # be substituted for one.
+    digest = hashlib.sha256(CONTENT_EQUIVALENCE_VERSION.encode("utf-8") + b"\x00")
+    digest.update(
+        unicodedata.normalize("NFC", _stable_text(raw_text)).encode("utf-8")
+    )
+    return digest.hexdigest()
 
 
 def compute_dedupe_key(
@@ -249,6 +275,9 @@ def normalize_leaf(
         raise ValueError("leaf type exceeds 100 characters")
     if _contains_control(source) or _contains_control(leaf_type):
         raise ValueError("leaf source/type contains unsupported control characters")
+    # Stored verbatim: a casefile quotes exact visible passages and reports
+    # offsets into them, so rewriting a publisher's characters to any
+    # normalization form would corrupt the evidence and move every span.
     raw_text = _stable_text(leaf["raw_text"])
     if len(raw_text.encode("utf-8")) > MAX_RAW_TEXT_BYTES:
         raise ValueError(f"leaf raw_text exceeds {MAX_RAW_TEXT_BYTES} bytes")

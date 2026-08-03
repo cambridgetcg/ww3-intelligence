@@ -1,10 +1,33 @@
 # Changelog
 
+## 0.1.4 — 2026-08-03
+
+- Match an alias in whichever canonically equivalent spelling a publisher
+  served, against the text as stored, so a decomposed record is no longer
+  invisible (`ww3.actor-mentions/v3`). Each mention names the spelling that
+  matched. Stored content and its identity are untouched: the alias moves to
+  meet the text, never the reverse.
+- Report rhetoric density on a basis the passage's script can bear, and
+  distinguish "no markers found" from "this figure does not apply here"
+  (`ww3-rhetorlint/0.3`). A whole Chinese sentence counted as one word, so a
+  single marker read as a density of 100 per 100 words.
+- Measure shared visible text between the records in a casefile
+  (`ww3.shared-text/v1`), beside the publisher and control-group counts that
+  contract 6 warns are not corroboration. It reports an arithmetic, not a
+  shared origin, and silence in it is not evidence of independence.
+
+**Upgrading:** the casefile fingerprint binds the actor-mention contract, so an
+assessment written against records under v2 will fail `validate-assessment`
+with a fingerprint mismatch. That is the intended refusal — v3 changes spans
+and counts, so a v2-bound assessment must not silently revalidate. Rebuild the
+casefile and re-check the assessment against it.
+
 ## 0.1.3 — 2026-08-02
 
 - Match actor aliases under the guard their own script can carry, so a mention
   in a language that writes without spaces is visible at all
-  (`ww3.actor-mentions/v2`). Every mention records which guard applied.
+  (`ww3.actor-mentions/v2`, superseded by v3 below). Every mention records
+  which guard applied.
 - Carry native-script aliases for registered actors.
 - Register first-party publishers beyond the original English set, disabled and
   saying in their own caveat that their endpoints are unverified.

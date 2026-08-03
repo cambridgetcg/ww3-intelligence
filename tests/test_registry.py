@@ -1,5 +1,6 @@
 import hashlib
 import json
+import unicodedata
 from unittest.mock import patch
 
 import pytest
@@ -8,8 +9,13 @@ from click.testing import CliRunner
 from cli.commands import cli
 from core.registry import (
     ACTOR_CONTRACT,
+    ALIAS_FORM_AS_REGISTERED,
+    ALIAS_FORM_NFC,
+    ALIAS_FORM_NFD,
     SOURCE_CONTRACT,
     actor_profiles,
+    alias_identity_key,
+    expand_alias_forms,
     registry_payload,
     rss_source_profiles,
     source_profiles,
@@ -72,6 +78,9 @@ def test_on_disk_registries_load_under_the_shipped_validator():
     assert len(actors) == 39
     assert len(sources) == 27
     assert sum(len(item.aliases) for item in actors) == 261
+    # Only an alias whose characters decompose gains a second spelling, so the
+    # searchable surface grows by the 44 that do and by nothing else.
+    assert sum(len(item.alias_forms) for item in actors) == 305
 
 
 def test_registered_rss_sources_replace_dead_endpoints_and_diversify_roles():
@@ -270,6 +279,91 @@ def test_registry_rejects_casefold_ambiguous_or_extended_aliases(monkeypatch):
             registry.actor_profiles()
     finally:
         registry.actor_profiles.cache_clear()
+
+
+def _actor_document(*aliases):
+    return {
+        "contract": ACTOR_CONTRACT,
+        "actors": [
+            {
+                "actor_id": f"state:{index}", "canonical_name": f"A{index}",
+                "kind": "state", "aliases": [alias],
+            }
+            for index, alias in enumerate(aliases)
+        ],
+    }
+
+
+def _load_actors(monkeypatch, document):
+    from core import registry
+
+    monkeypatch.setattr(registry, "_load_json", lambda name: document)
+    registry.actor_profiles.cache_clear()
+    try:
+        return registry.actor_profiles()
+    finally:
+        registry.actor_profiles.cache_clear()
+
+
+def test_alias_expansion_adds_equivalent_spellings_and_nothing_else():
+    composed = "Türkiye"
+    decomposed = unicodedata.normalize("NFD", composed)
+
+    forms = expand_alias_forms((("United States", True), (composed, False)))
+
+    assert [(item.text, item.form, item.case_sensitive) for item in forms] == [
+        ("United States", ALIAS_FORM_AS_REGISTERED, True),
+        (composed, ALIAS_FORM_AS_REGISTERED, False),
+        (decomposed, ALIAS_FORM_NFD, False),
+    ]
+    # A registry edited on a decomposing filesystem is served the mirror image,
+    # so the composed spelling a publisher sends is still reachable.
+    assert [item.form for item in expand_alias_forms(((decomposed, False),))] == [
+        ALIAS_FORM_AS_REGISTERED, ALIAS_FORM_NFC,
+    ]
+    # NFKC is not applied: a ligature or full-width spelling is other
+    # characters, not another serialization of the same ones, and folding an
+    # alias could never have reached text serving them anyway.
+    assert [item.text for item in expand_alias_forms((("ﬁrst", False),))] == ["ﬁrst"]
+    assert [item.text for item in expand_alias_forms((("ＵＳ", False),))] == ["ＵＳ"]
+
+
+def test_registry_rejects_two_actors_holding_one_name_in_two_spellings(monkeypatch):
+    composed = {"text": "Türkiye", "case_sensitive": False}
+    decomposed = {
+        "text": unicodedata.normalize("NFD", "Türkiye"), "case_sensitive": False,
+    }
+
+    # The raw comparison the check replaced saw two unrelated strings here.
+    assert composed["text"].casefold() != decomposed["text"].casefold()
+    with pytest.raises(RuntimeError, match="ambiguous actor alias"):
+        _load_actors(monkeypatch, _actor_document(composed, decomposed))
+
+
+def test_case_sensitivity_cannot_excuse_a_spelling_only_difference(monkeypatch):
+    composed = {"text": "Türkiye", "case_sensitive": True}
+    decomposed = {
+        "text": unicodedata.normalize("NFD", "Türkiye"), "case_sensitive": True,
+    }
+    other = {"text": "TÜRKIYE", "case_sensitive": True}
+
+    with pytest.raises(RuntimeError, match="ambiguous actor alias"):
+        _load_actors(monkeypatch, _actor_document(composed, decomposed))
+    # Two case-sensitive aliases whose characters actually differ still stand.
+    assert len(_load_actors(monkeypatch, _actor_document(composed, other))) == 2
+
+
+def test_the_ambiguity_check_sees_every_spelling_the_matcher_will_search():
+    for actor in actor_profiles():
+        for form in actor.alias_forms:
+            registered = {
+                text for text, _ in actor.aliases
+                if alias_identity_key(text) == alias_identity_key(form.text)
+            }
+
+            # Nothing compiles into a pattern the collision check did not key
+            # on, so two actors cannot quietly answer to one visible name.
+            assert registered, (actor.actor_id, form.text)
 
 
 def test_registry_hashes_bind_the_loaded_snapshot(monkeypatch, tmp_path):

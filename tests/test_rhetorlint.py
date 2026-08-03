@@ -11,6 +11,9 @@ from core.observations import get_or_create_observation
 from interpretation import rhetorlint
 from interpretation.rhetorlint import (
     PASSAGE_TRANSFORM_VERSION,
+    SCRIPT_MODE_SPACED,
+    SCRIPT_MODE_UNSPACED,
+    UNSPACED_BASIS_RATIO,
     Passage,
     RhetorLintConfigInvalid,
     RhetorLintInvalidOutput,
@@ -21,13 +24,23 @@ from interpretation.rhetorlint import (
     RhetorLintTimeout,
     RhetorLintUnavailable,
     RulesPack,
+    _apply_exclusions,
     _engine_identity,
     _rules_pack,
     _run,
+    _summary_density,
     _utf16_units,
     _validate_result,
     extract_passages,
+    script_profile,
 )
+
+# A passage in each of the three shapes the denominator has to survive: words
+# written apart, words written together, and one of each in the same string.
+ENGLISH = "Mistakes were made."
+CHINESE = "有关部门表示，据报道，该事件的责任方尚未确定，错误已经发生。"
+JAPANESE = "関係当局によると、報道によれば、その事件の責任者はまだ特定されていない。"
+UNSPACED_GENRE = "SECURITY COUNCIL：有关部门表示错误已经发生。"
 
 
 def _observation(raw_text):
@@ -39,7 +52,7 @@ def _observation(raw_text):
     })[0]
 
 
-def _passage(text="Mistakes were made."):
+def _passage(text=ENGLISH):
     encoded = text.encode("utf-8")
     return Passage(
         passage_id="sha256:" + "a" * 64,
@@ -115,9 +128,18 @@ def _result(passage, *, start=None, actual="were made", rewrite=None):
     }
 
 
-def _genre_result(passage, caps="SECURITY COUNCIL"):
+def _unspaced_result(passage, actual="据报道"):
+    """Engine output for text whitespace cannot divide: one 'word' per passage."""
+    # The engine's own arithmetic, reproduced exactly: a whole passage counts
+    # as a single word, so one mark reads as a hundred marks per hundred words.
+    value = _result(passage, actual=actual)
+    value["density"] = {"tells": 1, "per100Words": 100.0}
+    return value
+
+
+def _genre_result(passage, caps="SECURITY COUNCIL", actual="were made"):
     """Engine output where a wire-copy caps header sits beside a real tell."""
-    value = _result(passage)
+    value = _result(passage, actual=actual)
     start = _utf16_units(passage.text[:passage.text.index(caps)])
     end = start + _utf16_units(caps)
     value["marks"].insert(0, {
@@ -161,6 +183,166 @@ def test_passage_extraction_is_field_specific_visible_text_and_deterministic():
     ]
     assert all(item.transform_version == PASSAGE_TRANSFORM_VERSION for item in first)
     assert all(item.passage_id.startswith("sha256:") for item in first)
+
+
+def test_script_profile_measures_what_no_whitespace_split_can_divide():
+    assert script_profile(ENGLISH)["mode"] == SCRIPT_MODE_SPACED
+    assert script_profile(CHINESE)["mode"] == SCRIPT_MODE_UNSPACED
+    assert script_profile(JAPANESE)["mode"] == SCRIPT_MODE_UNSPACED
+    assert script_profile("ประเทศไทยกล่าวว่า")["mode"] == SCRIPT_MODE_UNSPACED
+    assert script_profile(UNSPACED_GENRE)["mode"] == SCRIPT_MODE_UNSPACED
+
+    # Korean writes its words apart, so a whitespace count still describes it.
+    assert script_profile("러시아는 성명을 발표했다")["mode"] == SCRIPT_MODE_SPACED
+    # No letters at all: nothing here is hidden from a whitespace split.
+    assert script_profile("2026-07-24 12:00 UTC")["mode"] == SCRIPT_MODE_SPACED
+
+    quoting = script_profile("Sanctions on 中国 announced by the ministry today")
+    assert quoting == {
+        "mode": SCRIPT_MODE_SPACED,
+        "script_characters": 40,
+        "unspaced_characters": 2,
+        "unspaced_ratio_threshold": UNSPACED_BASIS_RATIO,
+    }
+
+
+def test_english_density_is_word_based_and_passes_the_engine_figure_through():
+    passage = _passage()
+
+    value = _validate_result(_result(passage), passage)
+
+    assert value["source"]["whitespace_words"] == 3
+    assert value["source"]["script"]["mode"] == SCRIPT_MODE_SPACED
+    assert value["source"]["rules_locale"] == "en"
+    assert value["density"] == {
+        "tells": 1,
+        "basis": "words",
+        "per_100_words": 25.0,
+        "per_100_characters": None,
+    }
+
+
+def test_unspaced_passage_reports_characters_and_withholds_the_word_figure():
+    passage = _passage(CHINESE)
+
+    value = _validate_result(_unspaced_result(passage), passage)
+
+    assert value["source"]["whitespace_words"] == 1
+    assert value["source"]["script"] == {
+        "mode": SCRIPT_MODE_UNSPACED,
+        "script_characters": 26,
+        "unspaced_characters": 26,
+        "unspaced_ratio_threshold": UNSPACED_BASIS_RATIO,
+    }
+    assert value["density"] == {
+        "tells": 1,
+        "basis": "characters",
+        "per_100_words": None,
+        "per_100_characters": round(1 / _utf16_units(CHINESE) * 100, 1),
+    }
+    assert value["density"]["per_100_characters"] != 100.0
+
+
+def test_no_marks_found_and_an_inapplicable_denominator_read_differently():
+    english = _passage()
+    chinese = _passage(CHINESE)
+    unmarked = {"marks": [], "density": {"tells": 0, "per100Words": 0}}
+
+    spaced = _validate_result({**_result(english), **unmarked}, english)
+    unspaced = _validate_result({**_unspaced_result(chinese), **unmarked}, chinese)
+
+    assert spaced["density"]["per_100_words"] == 0
+    assert spaced["density"]["per_100_characters"] is None
+    assert unspaced["density"]["per_100_words"] is None
+    assert unspaced["density"]["per_100_characters"] == 0.0
+
+
+def test_summary_density_lists_every_basis_and_averages_inside_one_only():
+    english = _passage()
+    chinese = _passage(CHINESE)
+    spaced = _validate_result(_result(english), english)
+    unspaced = _validate_result(_unspaced_result(chinese), chinese)
+
+    single = _summary_density([spaced, spaced])
+
+    assert single["comparable_across_passages"] is True
+    assert single["words"] == {
+        "passages": 2, "tells": 2, "words": 6, "per_100_words": 33.3,
+    }
+    # A basis no passage reached carries no figure; a basis whose passages
+    # carried no marks carries 0.0.
+    assert single["characters"] == {
+        "passages": 0, "tells": 0, "characters": 0, "per_100_characters": None,
+    }
+
+    mixed = _summary_density([spaced, unspaced])
+
+    assert mixed["comparable_across_passages"] is False
+    assert mixed["words"] == {
+        "passages": 1, "tells": 1, "words": 3, "per_100_words": 33.3,
+    }
+    assert mixed["characters"] == {
+        "passages": 1,
+        "tells": 1,
+        "characters": _utf16_units(CHINESE),
+        "per_100_characters": round(1 / _utf16_units(CHINESE) * 100, 1),
+    }
+
+
+def test_mixed_script_observation_reports_no_single_blended_density(tmp_path):
+    observation = _observation(json.dumps({"title": ENGLISH, "summary": CHINESE}))
+    title, summary = extract_passages(observation)
+    with patch("interpretation.rhetorlint.discover_runtime",
+               return_value=_runtime(tmp_path)), \
+         patch("interpretation.rhetorlint._run", return_value=[
+             _validate_result(_result(title), title),
+             _validate_result(_unspaced_result(summary), summary),
+         ]):
+        value = rhetorlint.analyze_observation_rhetoric(observation)
+
+    density = value["summary"]["density"]
+    assert value["summary"]["matched_tells"] == 2
+    assert value["summary"].keys() == {
+        "passages", "matched_tells", "excluded_marks", "density",
+    }
+    assert density["comparable_across_passages"] is False
+    assert density["words"]["passages"] == 1
+    assert density["characters"]["passages"] == 1
+    assert [item["result"]["density"]["basis"] for item in value["passages"]] == [
+        "words", "characters",
+    ]
+    assert value["contract_version"] == "ww3-rhetorlint/0.3"
+    assert "comparable only within one basis" in value["scope"]
+
+
+def test_withheld_rule_recounts_a_passage_under_its_own_denominator():
+    spaced = _passage("SECURITY COUNCIL statement: Mistakes were made.")
+    unspaced = _passage(UNSPACED_GENRE)
+
+    words = _apply_exclusions(
+        _validate_result(_genre_result(spaced), spaced), ("shouting.caps",)
+    )
+    characters = _apply_exclusions(
+        _validate_result(
+            _genre_result(unspaced, actual="有关部门"), unspaced
+        ),
+        ("shouting.caps",),
+    )
+
+    assert words["excluded_marks"] == {"shouting.caps": 1}
+    assert words["density"] == {
+        "tells": 1,
+        "basis": "words",
+        "per_100_words": round(1 / 6 * 100, 1),
+        "per_100_characters": None,
+    }
+    assert characters["excluded_marks"] == {"shouting.caps": 1}
+    assert characters["density"] == {
+        "tells": 1,
+        "basis": "characters",
+        "per_100_words": None,
+        "per_100_characters": round(1 / _utf16_units(UNSPACED_GENRE) * 100, 1),
+    }
 
 
 def test_utf16_offsets_validate_visible_span_after_emoji():
@@ -435,6 +617,26 @@ def test_engine_identity_must_agree_across_passages_and_with_the_local_pack(tmp_
 
     with pytest.raises(RhetorLintPackUnrecognized):
         _engine_identity(replace(runtime, pack=_pack("0.1.2")), [result])
+
+
+def test_real_local_engine_counts_one_word_for_a_whole_chinese_passage():
+    """Canary: the engine's denominator, measured rather than assumed."""
+    try:
+        rhetorlint.discover_runtime()
+    except RhetorLintUnavailable:
+        pytest.skip("no local RhetorLint checkout or node executable")
+    observation = _observation(json.dumps({"summary": CHINESE}))
+
+    value = rhetorlint.analyze_observation_rhetoric(observation)
+
+    result = value["passages"][0]["result"]
+    assert result["source"]["chars_utf16"] == 30
+    assert result["source"]["whitespace_words"] == 1
+    # The pack's locale, echoed by the engine; it read no language here.
+    assert result["source"]["rules_locale"] == "en"
+    assert result["density"]["basis"] == "characters"
+    assert result["density"]["per_100_words"] is None
+    assert value["summary"]["density"]["words"]["passages"] == 0
 
 
 def test_real_local_engine_runs_and_withholds_the_excluded_rule(monkeypatch):

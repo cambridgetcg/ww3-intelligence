@@ -1,8 +1,16 @@
 import hashlib
+import unicodedata
 
 import pytest
 
-from core.registry import ActorProfile
+from core.registry import (
+    ALIAS_FORM_AS_REGISTERED,
+    ALIAS_FORM_NFC,
+    ALIAS_FORM_NFD,
+    ALIAS_FORMS,
+    ActorProfile,
+    expand_alias_forms,
+)
 from interpretation.actors import (
     ACTOR_MENTION_VERSION,
     MATCH_MODE_BOUNDARY_GUARDED,
@@ -12,6 +20,7 @@ from interpretation.actors import (
     MAX_MENTION_CANDIDATES_PER_PASSAGE,
     MAX_MENTIONS_PER_OBSERVATION,
     MAX_MENTIONS_PER_PASSAGE,
+    _abuts_word_character,
     _alias_pattern,
     _scan_passage,
     scan_actor_mentions,
@@ -34,11 +43,13 @@ def _passage(text, passage_id="p1"):
 
 def _profile(actor_id, *aliases, case_sensitive=False):
     """Build one in-test identity so the shipped registry stays out of scope."""
+    declared = tuple((alias, case_sensitive) for alias in aliases)
     return ActorProfile(
         actor_id=actor_id,
         canonical_name=actor_id.split(":")[-1],
         kind="state",
-        aliases=tuple((alias, case_sensitive) for alias in aliases),
+        aliases=declared,
+        alias_forms=expand_alias_forms(declared),
     )
 
 
@@ -141,6 +152,7 @@ def test_mention_dict_records_the_guards_the_span_and_the_encoding():
         "span": {"start": 2, "end": 4, "offset_encoding": "unicode-code-point"},
         "match": {
             "mode": MATCH_MODE_UNGUARDED,
+            "alias_form": ALIAS_FORM_AS_REGISTERED,
             "leading_guard": False,
             "trailing_guard": False,
             "adjacent_word_character": {"before": True, "after": True},
@@ -148,6 +160,7 @@ def test_mention_dict_records_the_guards_the_span_and_the_encoding():
     }
     assert latin.as_dict()["match"] == {
         "mode": MATCH_MODE_BOUNDARY_GUARDED,
+        "alias_form": ALIAS_FORM_AS_REGISTERED,
         "leading_guard": True,
         "trailing_guard": True,
         "adjacent_word_character": {"before": False, "after": False},
@@ -199,6 +212,10 @@ def test_scan_metadata_names_every_match_mode_and_the_contract(monkeypatch):
         MATCH_MODE_UNGUARDED: 1,
     }
     assert tuple(scan.metadata()["match_modes"]) == MATCH_MODES
+    assert scan.metadata()["alias_forms"] == {
+        ALIAS_FORM_AS_REGISTERED: 2, ALIAS_FORM_NFC: 0, ALIAS_FORM_NFD: 0,
+    }
+    assert tuple(scan.metadata()["alias_forms"]) == ALIAS_FORMS
     assert scan.metadata()["limits"] == {
         "candidates_per_passage": MAX_MENTION_CANDIDATES_PER_PASSAGE,
         "mentions_per_passage": MAX_MENTIONS_PER_PASSAGE,
@@ -268,3 +285,152 @@ def test_attached_prefix_scripts_stay_guarded_as_a_named_limit(alias, spaced, pr
 
 def test_zero_width_alias_cannot_spray_mentions_between_characters():
     assert _mentions("中国政府表示", _profile("state:x", "")) == []
+
+
+@pytest.mark.parametrize("alias_form, text_form, matched_form", [
+    ("NFC", "NFC", ALIAS_FORM_AS_REGISTERED),
+    ("NFC", "NFD", ALIAS_FORM_NFD),
+    ("NFD", "NFD", ALIAS_FORM_AS_REGISTERED),
+    ("NFD", "NFC", ALIAS_FORM_NFC),
+])
+@pytest.mark.parametrize("alias, sentence, mode", [
+    ("러시아", "러시아는 말했다", MATCH_MODE_LEADING_GUARDED),
+    ("Türkiye", "the Türkiye statement", MATCH_MODE_BOUNDARY_GUARDED),
+    ("Việt Nam", "the Việt Nam statement", MATCH_MODE_BOUNDARY_GUARDED),
+])
+def test_an_alias_is_seen_in_either_normalization_the_publisher_serves(
+    alias, sentence, mode, alias_form, text_form, matched_form
+):
+    profile = _profile("state:x", unicodedata.normalize(alias_form, alias))
+    text = unicodedata.normalize(text_form, sentence)
+
+    mention = _mentions(text, profile)[0]
+
+    assert mention.match_mode == mode
+    assert mention.alias_form == matched_form
+    # The span indexes the text exactly as it arrived, not a normalized copy:
+    # NFC and NFD of the same sentence are different lengths.
+    assert text[mention.start:mention.end] == mention.actual
+    assert mention.actual == unicodedata.normalize(text_form, alias)
+
+
+def test_the_reproduced_decomposed_korean_case_answers_with_true_spans():
+    profile = _profile("state:russia", "러시아")
+    composed = unicodedata.normalize("NFC", "러시아는 말했다")
+    decomposed = unicodedata.normalize("NFD", "러시아는 말했다")
+
+    composed_mention = _mentions(composed, profile)[0]
+    decomposed_mention = _mentions(decomposed, profile)[0]
+
+    assert (len(composed), len(decomposed)) == (8, 18)
+    assert (composed_mention.start, composed_mention.end) == (0, 3)
+    # Six Jamo carry the same three syllables, so an offset taken from the
+    # composed copy would end mid-word in the record actually stored.
+    assert (decomposed_mention.start, decomposed_mention.end) == (0, 6)
+    assert decomposed[0:6] == unicodedata.normalize("NFD", "러시아")
+    assert decomposed_mention.alias_form == ALIAS_FORM_NFD
+    assert decomposed_mention.match_mode == MATCH_MODE_LEADING_GUARDED
+    assert _adjacency(decomposed_mention) == (False, True)
+
+
+def test_ascii_aliases_gain_no_extra_spellings_to_search():
+    latin = _profile("state:us", "United States")
+    accented = _profile("state:turkey", "Türkiye")
+
+    assert [form.form for form in latin.alias_forms] == [ALIAS_FORM_AS_REGISTERED]
+    assert [form.form for form in accented.alias_forms] == [
+        ALIAS_FORM_AS_REGISTERED, ALIAS_FORM_NFD,
+    ]
+    assert [form.text for form in accented.alias_forms] == [
+        "Türkiye", unicodedata.normalize("NFD", "Türkiye"),
+    ]
+
+
+def test_guards_and_overlap_resolution_survive_a_decomposed_passage():
+    profile = _profile("state:turkey", "Türkiye")
+    republic = _profile("state:turkey-republic", "Türkiye Cumhuriyeti")
+    text = unicodedata.normalize("NFD", "Türkiye Cumhuriyeti spoke")
+
+    long_form = unicodedata.normalize("NFD", "Türkiye Cumhuriyeti")
+
+    assert _mentions(unicodedata.normalize("NFD", "Türkiyeli yazar"), profile) == []
+    assert [
+        (item.actor_id, item.actual) for item in _mentions(text, profile, republic)
+    ] == [("state:turkey-republic", long_form)]
+
+
+def test_scan_metadata_counts_each_spelling_that_matched(monkeypatch):
+    monkeypatch.setattr(
+        "interpretation.actors.actor_profiles",
+        lambda: (_profile("state:russia", "러시아"), _profile("state:china", "中国")),
+    )
+
+    scan = scan_actor_mentions((
+        _passage(unicodedata.normalize("NFD", "러시아는 말했다"), "p1"),
+        _passage("러시아는 말했다", "p2"),
+        _passage("中国政府表示", "p3"),
+    ))
+
+    assert scan.metadata()["alias_forms"] == {
+        ALIAS_FORM_AS_REGISTERED: 2, ALIAS_FORM_NFC: 0, ALIAS_FORM_NFD: 1,
+    }
+    assert scan.metadata()["mentions_emitted"] == 3
+
+
+def test_alias_spellings_share_the_pattern_cache_without_recompiling():
+    _alias_pattern.cache_clear()
+    profile = _profile("state:russia", "러시아")
+    decomposed = unicodedata.normalize("NFD", "러시아")
+
+    _mentions("러시아는 말했다", profile)
+    _mentions(unicodedata.normalize("NFD", "러시아에서 열린 회담"), profile)
+
+    # One entry per distinct spelling, however many passages are scanned.
+    assert _alias_pattern.cache_info().misses == 2
+    assert _alias_pattern.cache_info().hits >= 2
+    assert _alias_pattern(decomposed, False)[0] is _alias_pattern(decomposed, False)[0]
+
+
+def test_text_mentions_actor_sees_a_decomposed_capacity_claim(monkeypatch):
+    monkeypatch.setattr(
+        "interpretation.actors.actor_profiles",
+        lambda: (_profile("state:russia", "러시아"), _profile("state:us", "US")),
+    )
+
+    assert text_mentions_actor(
+        "state:russia", unicodedata.normalize("NFD", "러시아는 말했다")
+    ) is True
+    assert text_mentions_actor("state:russia", "러시아는 말했다") is True
+    assert text_mentions_actor("state:us", "USA issued a statement.") is False
+
+
+def test_a_guard_is_not_fooled_by_the_marks_decomposed_text_carries():
+    profile = _profile("state:x", "Ha")
+    decomposed = unicodedata.normalize("NFD", "Hà Nội said")
+
+    # The compiled guard alone answers here, because a combining acute is not
+    # a word character and the alias appears to stand delimited.
+    assert _alias_pattern("Ha", False)[0].search(decomposed) is not None
+    assert _mentions(decomposed, profile) == []
+    assert len(_mentions("Ha said", profile)) == 1
+    # The same predicate is what a mention without that guard reports, so the
+    # stricter reading stays reconstructable rather than silently asserted.
+    assert _abuts_word_character(decomposed, 2) is True
+    assert _abuts_word_character("Ha said", 2) is False
+    assert _abuts_word_character(unicodedata.normalize("NFD", "भारता"), 4) is True
+
+
+def test_shipped_registry_sees_decomposed_native_script_text():
+    from core.registry import actor_profiles
+
+    for actor_id, sentence in (
+        ("state:russia", "Российская Федерация заявила"),
+        ("state:turkey", "Türkiye Cumhuriyeti açıklama yaptı"),
+    ):
+        profile = next(item for item in actor_profiles() if item.actor_id == actor_id)
+        text = unicodedata.normalize("NFD", sentence)
+
+        mention = _mentions(text, profile)[0]
+
+        assert mention.alias_form == ALIAS_FORM_NFD
+        assert text[mention.start:mention.end] == mention.actual
