@@ -334,6 +334,21 @@ drop root privileges after preparing the mounted volume. One Machine and one
 local volume are a lightweight prototype, not high availability or a complete
 backup strategy.
 
+On the operator Mac, `ops/fly_backup.sh` uses SQLite's online backup API to
+make a transactionally consistent copy from the running Machine, downloads it
+outside Fly, and requires both `quick_check` and a clean foreign-key check
+before publishing it under the owner-only
+`~/Backups/ww3-intelligence/` directory. It keeps 30 days by default:
+
+```bash
+ops/fly_backup.sh
+```
+
+The local copy is independent of the Fly volume and its snapshots. It is not
+off-site, does not run while the Mac is asleep, and does not prove that a full
+restore into a replacement Fly app will succeed. The LaunchAgent installed on
+the operator Mac runs it daily; a separate restore drill remains necessary.
+
 ## Evidence and capability limits
 
 The ordinary collection/projection command path guarantees that framework code
