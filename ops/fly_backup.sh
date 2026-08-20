@@ -47,9 +47,33 @@ else
   ' "$fly_config")"
 fi
 
+run_with_timeout() {
+  local limit="$1"
+  shift
+  "$@" &
+  local child_pid=$!
+  (
+    /bin/sleep "$limit"
+    /bin/kill -TERM "$child_pid" 2>/dev/null || exit 0
+    /bin/sleep 5
+    /bin/kill -KILL "$child_pid" 2>/dev/null || true
+  ) &
+  local watchdog_pid=$!
+  local child_status
+  if wait "$child_pid"; then
+    child_status=0
+  else
+    child_status=$?
+  fi
+  /bin/kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  return "$child_status"
+}
+
 cleanup() {
   if [[ -n "$machine_id" ]]; then
-    FLY_API_TOKEN="$fly_token" "$flyctl_bin" ssh console \
+    run_with_timeout 45 /usr/bin/env FLY_API_TOKEN="$fly_token" \
+      "$flyctl_bin" ssh console \
       --app "$app_name" --machine "$machine_id" \
       --command "python -c 'import os; p=\"$remote_path\"; os.path.exists(p) and os.unlink(p)'" \
       >/dev/null 2>&1 || true
@@ -65,7 +89,8 @@ trap cleanup EXIT INT TERM
 /bin/chmod 700 "$backup_dir"
 
 machine_id="$(
-  FLY_API_TOKEN="$fly_token" "$flyctl_bin" machine list --app "$app_name" --json \
+  run_with_timeout 45 /usr/bin/env FLY_API_TOKEN="$fly_token" \
+    "$flyctl_bin" machine list --app "$app_name" --json \
     | "$jq_bin" -r '[.[] | select(.state == "started")][0].id // empty'
 )"
 if [[ -z "$machine_id" ]]; then
@@ -73,7 +98,8 @@ if [[ -z "$machine_id" ]]; then
   exit 1
 fi
 
-FLY_API_TOKEN="$fly_token" "$flyctl_bin" ssh console \
+run_with_timeout 90 /usr/bin/env FLY_API_TOKEN="$fly_token" \
+  "$flyctl_bin" ssh console \
   --app "$app_name" --machine "$machine_id" \
   --command "python -c 'import os,sqlite3; src=sqlite3.connect(\"file:/data/ww3.db?mode=ro\",uri=True); dst=sqlite3.connect(\"$remote_path\"); src.backup(dst); result=dst.execute(\"PRAGMA quick_check\").fetchone()[0]; src.close(); dst.close(); os.chmod(\"$remote_path\",0o600); assert result == \"ok\"'"
 
@@ -82,7 +108,8 @@ if [[ -e "$local_tmp" ]]; then
   echo "Refusing to overwrite an existing backup temporary file: $local_tmp" >&2
   exit 1
 fi
-FLY_API_TOKEN="$fly_token" "$flyctl_bin" ssh sftp get \
+run_with_timeout 180 /usr/bin/env FLY_API_TOKEN="$fly_token" \
+  "$flyctl_bin" ssh sftp get \
   --app "$app_name" --machine "$machine_id" \
   "$remote_path" "$local_tmp"
 
