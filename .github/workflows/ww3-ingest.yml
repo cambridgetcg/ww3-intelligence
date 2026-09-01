@@ -1,0 +1,68 @@
+# WW3 Intelligence — cron ingest on GitHub Actions (moved off a 24/7 Fly machine, 2026-09-01)
+# 越少嘢做越多收成就最好: the ingest loop is cron-shaped, so it lives on a cron.
+# The Streamlit dashboard stays local (streamlit run dashboard/app.py) — interactive by nature.
+#
+# State: the SQLite DB is passed between runs via actions cache (7-day retention,
+#        self-healing: if the cache misses, ingest re-seeds from live feeds).
+#        The event stream (data/stream/events.jsonl) is committed for the record.
+
+name: ww3-ingest
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # every 30 minutes — USGS 5-min / news 10-min polls collapse into one cron tick
+  workflow_dispatch: {}       # manual door: run any time from the Actions tab
+
+permissions:
+  contents: write              # commit the event stream
+
+concurrency:
+  group: ww3-ingest
+  cancel-in-progress: false    # never two ingests at once — the DB is single-writer
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install (ingest core only — no streamlit/plotly/telethon, no LLM)
+        run: |
+          python -m pip install --upgrade pip
+          pip install click peewee requests beautifulsoup4 feedparser rich python-dotenv PyYAML
+
+      - name: Restore the database
+        uses: actions/cache@v4
+        with:
+          path: core/db/ww3.db
+          key: ww3-db-${{ github.run_id }}
+          restore-keys: |
+            ww3-db-
+
+      - name: Ingest — USGS seismic
+        env:
+          WW3_DISABLE_LLM: "1"
+        run: python ww3.py ingest usgs
+
+      - name: Ingest — news feeds
+        env:
+          WW3_DISABLE_LLM: "1"
+        run: python ww3.py ingest news
+
+      - name: Commit the event stream (if it grew)
+        run: |
+          git config user.name  "ww3-ingest bot"
+          git config user.email "actions@users.noreply.github.com"
+          if [ -f data/stream/events.jsonl ] && ! git diff --quiet data/stream/; then
+            git add data/stream/
+            git commit -m "ww3 ingest: $(date -u +%FT%TZ) — events from USGS + news"
+            git push
+          else
+            echo "stream unchanged — nothing to commit"
+          fi
