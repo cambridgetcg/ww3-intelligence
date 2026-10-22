@@ -1,0 +1,112 @@
+# WW3 Intelligence — encrypted export of the observation database, for the private archive.
+#
+# The Actions cache is the collector's only copy of what it has gathered, and a cache
+# nobody reads for 7 days is deleted. This job restores the newest copy (restore-only, so
+# it never saves a cache of its own), checks it, and encrypts it to the archive's public
+# key in ops/ww3-export.pub.asc. The private half of that key never comes near GitHub, so
+# the artifact is ciphertext to anyone else. A Mac pulls the artifact into the private
+# archive and deletes it; until then it expires on its own.
+#
+# Most rows are publishers' text (headlines, feed summaries), kept privately and not
+# redistributed. Only counts by source are printed here.
+
+name: ww3-export
+
+on:
+  schedule:
+    - cron: "41 6 * * 1"     # weekly, Monday 06:41 UTC
+  workflow_dispatch: {}       # manual door: export now
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ww3-export
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore the newest database (restore-only)
+        id: db
+        uses: actions/cache/restore@v4
+        with:
+          path: core/db/ww3.db
+          key: ww3-db-export-${{ github.run_id }}
+          restore-keys: |
+            ww3-db-
+
+      - name: Refuse when there is nothing to export
+        if: steps.db.outputs.cache-matched-key == ''
+        run: |
+          echo "::error::No ww3-db cache was found, so there is nothing to export."
+          exit 1
+
+      - name: Check the database and write its manifest
+        env:
+          MATCHED_KEY: ${{ steps.db.outputs.cache-matched-key }}
+        run: |
+          mkdir -p export
+          python3 - <<'PYEOF'
+          import hashlib, json, os, sqlite3
+
+          path = "core/db/ww3.db"
+          con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+          check = con.execute("PRAGMA integrity_check").fetchone()[0]
+          if check != "ok":
+              raise SystemExit(f"integrity_check: {check}")
+          rows = con.execute("SELECT COUNT(*) FROM observation").fetchone()[0]
+          by_source = dict(con.execute(
+              "SELECT source, COUNT(*) FROM observation GROUP BY source ORDER BY source"))
+          first, last = con.execute(
+              "SELECT MIN(fetched_at), MAX(fetched_at) FROM observation").fetchone()
+          max_id = con.execute("SELECT MAX(id) FROM observation").fetchone()[0]
+          con.close()
+          with open(path, "rb") as fh:
+              digest = hashlib.sha256(fh.read()).hexdigest()
+          manifest = {
+              "schema": "ww3-export/1",
+              "cache_key": os.environ["MATCHED_KEY"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "commit": os.environ["GITHUB_SHA"],
+              "db_sha256": digest,
+              "db_bytes": os.path.getsize(path),
+              "observations": rows,
+              "max_id": max_id,
+              "by_source": by_source,
+              "first_fetched_at": first,
+              "last_fetched_at": last,
+          }
+          with open("export/manifest.json", "w") as fh:
+              json.dump(manifest, fh, indent=1)
+          print(f"observations: {rows} (max id {max_id}), {first} → {last}")
+          for source, n in by_source.items():
+              print(f"  {source}: {n}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
+              fh.write(f"**{rows}** observations, {first} → {last}\n\n")
+              fh.write("| source | rows |\n|---|---|\n")
+              for source, n in by_source.items():
+                  fh.write(f"| {source} | {n} |\n")
+          PYEOF
+
+      - name: Encrypt to the archive key
+        run: |
+          cp core/db/ww3.db export/ww3.db
+          tar -C export -czf ww3-export.tar.gz ww3.db manifest.json
+          gpg --batch --quiet --trust-model always \
+            --recipient-file ops/ww3-export.pub.asc \
+            --output ww3-export.tar.gz.gpg --encrypt ww3-export.tar.gz
+          rm -rf export ww3-export.tar.gz core/db/ww3.db
+          ls -l ww3-export.tar.gz.gpg
+
+      - name: Leave the ciphertext for the archive to collect
+        uses: actions/upload-artifact@v4
+        with:
+          name: ww3-export-${{ github.run_id }}
+          path: ww3-export.tar.gz.gpg
+          retention-days: 7
+          if-no-files-found: error

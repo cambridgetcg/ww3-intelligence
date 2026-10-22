@@ -2,9 +2,11 @@
 # 越少嘢做越多收成就最好: the ingest loop is cron-shaped, so it lives on a cron.
 # The Streamlit dashboard stays local (streamlit run dashboard/app.py) — interactive by nature.
 #
-# State: the SQLite DB is passed between runs via actions cache (7-day retention,
-#        self-healing: if the cache misses, ingest re-seeds from live feeds).
-#        The event stream (data/stream/events.jsonl) is committed for the record.
+# State: the SQLite DB is passed between runs via actions cache (7-day retention;
+#        if the cache misses, ingest starts again from live feeds and the older rows
+#        are lost). The cache is the only copy here: the event stream step below commits
+#        only when the model layer writes data/stream/, which this job keeps switched off.
+#        ww3-export.yml sends a weekly encrypted copy to the private archive.
 
 name: ww3-ingest
 
