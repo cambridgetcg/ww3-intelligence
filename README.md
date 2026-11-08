@@ -336,8 +336,10 @@ keeps the history.
 - `.github/workflows/ww3-export.yml` encrypts a copy of the ledger to the
   archive's keys every Monday, and once a day more when the lab Mac asks.
   Scheduled exports also commit `ledger/status.json`, counts and a digest with
-  no publisher text, so that the public repository shows activity and GitHub
-  keeps its schedules enabled.
+  no publisher text, so that the public repository shows activity. Whether a
+  push made with `GITHUB_TOKEN` counts as activity for GitHub's 60-day rule is
+  not documented, so the lab's `watch` also re-enables a workflow GitHub has
+  disabled for inactivity.
 - The lab Mac collects every export, decrypts and verifies it, and keeps it:
   `ops/lab_archive.py`, its LaunchAgents in `ops/lab/`, and the runbook in
   [`ops/ARCHIVE.md`](ops/ARCHIVE.md).
