@@ -224,6 +224,7 @@ def test_parse_rss_entry_keeps_bounded_first_party_feed_content():
 @pytest.mark.parametrize("source, host", [
     ("russia_mfa", "mid.ru"),
     ("iaea_topnews", "www.iaea.org"),
+    ("turkey_mfa", "www.mfa.gov.tr"),
 ])
 def test_parse_rss_entry_normalizes_known_official_links_to_https(source, host):
     result = parse_rss_entry({

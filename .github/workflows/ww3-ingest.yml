@@ -57,13 +57,21 @@ jobs:
           WW3_DISABLE_LLM: "1"
         run: python ww3.py ingest news
 
+      - name: Ingest — GDACS alerts
+        # After the news feeds, and allowed to fail alone: a slow GDACS answer
+        # must not cost a cycle of the other sources.
+        continue-on-error: true
+        env:
+          WW3_DISABLE_LLM: "1"
+        run: python ww3.py ingest gdacs
+
       - name: Commit the event stream (if it grew)
         run: |
           git config user.name  "ww3-ingest bot"
           git config user.email "actions@users.noreply.github.com"
           if [ -f data/stream/events.jsonl ] && ! git diff --quiet data/stream/; then
             git add data/stream/
-            git commit -m "ww3 ingest: $(date -u +%FT%TZ) — events from USGS + news"
+            git commit -m "ww3 ingest: $(date -u +%FT%TZ) — events from USGS + news + GDACS"
             git push
           else
             echo "stream unchanged — nothing to commit"

@@ -276,15 +276,15 @@
       "label": "Turkish Ministry of Foreign Affairs",
       "publisher_actor_id": "org:turkey-mfa",
       "delivery": "rss",
-      "endpoint": "https://www.mfa.gov.tr/",
+      "endpoint": "https://www.mfa.gov.tr/tr.rss.mfa?3fc6582e-a37b-40d1-847a-6914dc12fb60",
       "content_role": "first-party-statement",
       "locale": "tr",
       "editorial_control_group": "group:turkey-mfa",
       "authority_scope": "Turkish diplomatic positions, announcements, denials, and accusations",
-      "caveat": "A ministry publication establishes what this actor published in its own voice within the cited scope, not the truth of the claims inside it. Endpoint, delivery shape, and canonical hosts are unverified here; a human must confirm this feed before collection is enabled.",
+      "caveat": "A ministry publication establishes what this actor published in its own voice within the cited scope, not the truth of the claims inside it. Endpoint, delivery shape and canonical hosts were checked against the publisher's own site on 2026-11-02; reachability from the collector's network is not guaranteed. The feed is the ministry's Turkish 'Güncel Bakanlık Açıklamaları' (current ministry statements), linked from its own homepage and RSS index; entries are the numbered press releases, the spokesperson's statements and joint statements co-issued with other governments (which speak for a coalition, not for Turkey alone), each with a title and a short excerpt only, so the full statement is on the linked page. Item links are published as http:// and are upgraded to https on the ministry's own hosts. pubDate can trail the date in the title by about a day. The site sits behind a traffic-management layer that may challenge cloud addresses, so the first runner collections should be watched for non-200 responses or challenge pages.",
       "canonical_hosts": ["mfa.gov.tr"],
       "domains": ["diplomacy", "security", "middle-east"],
-      "collection_enabled": false
+      "collection_enabled": true
     },
     {
       "source_id": "saudi_mofa",
@@ -321,15 +321,15 @@
       "label": "German Federal Foreign Office",
       "publisher_actor_id": "org:germany-mfa",
       "delivery": "rss",
-      "endpoint": "https://www.auswaertiges-amt.de/",
+      "endpoint": "https://www.auswaertiges-amt.de/static/includes/rss/Presse-RSS-Feed.xml",
       "content_role": "first-party-statement",
       "locale": "de",
       "editorial_control_group": "group:germany-mfa",
       "authority_scope": "German diplomatic positions, announcements, denials, and accusations",
-      "caveat": "A ministry publication establishes what this actor published in its own voice within the cited scope, not the truth of the claims inside it. Endpoint, delivery shape, and canonical hosts are unverified here; a human must confirm this feed before collection is enabled.",
+      "caveat": "A ministry publication establishes what this actor published in its own voice within the cited scope, not the truth of the claims inside it. Endpoint, delivery shape and canonical hosts were checked against the publisher's own site on 2026-11-02; reachability from the collector's network is not guaranteed. The feed is the ministry's German 'Pressemitteilungen und Reden' (press releases and speeches), linked from its own RSS page. Some items are joint statements co-issued with other governments and speak for a coalition, not for Germany alone. The feed carries only the 10 newest items, with the text in the description. Keep the /static/includes/rss/ path; the feed's self link under /static/appdata/ is disallowed by robots.txt.",
       "canonical_hosts": ["auswaertiges-amt.de"],
       "domains": ["diplomacy", "security", "europe"],
-      "collection_enabled": false
+      "collection_enabled": true
     },
     {
       "source_id": "kcna",
@@ -396,13 +396,13 @@
       "label": "NHK News",
       "publisher_actor_id": "org:nhk",
       "delivery": "rss",
-      "endpoint": "https://www3.nhk.or.jp/news/",
+      "endpoint": "https://news.web.nhk/n-data/conf/na/rss/cat6.xml",
       "content_role": "newsroom-report",
       "locale": "ja",
       "editorial_control_group": "group:nhk",
       "authority_scope": null,
-      "caveat": "Publisher reporting may quote, summarize, or syndicate another origin. Endpoint, delivery shape, and canonical hosts are unverified here; a human must confirm this feed before collection is enabled.",
-      "canonical_hosts": ["nhk.or.jp"],
+      "caveat": "Publisher reporting may quote, summarize, or syndicate another origin. Endpoint, delivery shape and canonical hosts were checked against the publisher's own site on 2026-11-02; reachability from the collector's network is not guaranteed. The feed is NHK ONE News' Japanese 国際 (international) category on NHK's own .nhk domain, linked from NHK's RSS page at nhk.or.jp. It mixes business, culture and sports with world news, summaries are short, and the feed declares no language, so ja is read from the content. NHK's RSS terms allow personal use only, with no redistribution or re-provision by programs, and its robots.txt asks AI crawlers to stay away, so collection stays off until a human decides whether this ledger's use fits those terms. The old www3.nhk.or.jp feeds still answer but stopped updating in August 2026.",
+      "canonical_hosts": ["news.web.nhk"],
       "domains": ["world-news", "east-asia"],
       "collection_enabled": false
     }

@@ -27,10 +27,26 @@ from core.text_safety import contains_unsafe_controls
 # of collection until a human confirms the feed.
 _UNVERIFIED_SOURCE_IDS = frozenset({
     "china_mfa", "iran_mfa", "israel_mfa", "india_mea", "ukraine_mfa",
-    "japan_mofa", "turkey_mfa", "saudi_mofa", "france_diplomatie",
-    "germany_federal_foreign_office", "kcna", "aljazeera_arabic", "lemonde",
-    "xinhua", "nhk_news",
+    "japan_mofa", "saudi_mofa", "france_diplomatie", "kcna",
+    "aljazeera_arabic", "lemonde", "xinhua",
 })
+# Verified, but held off because the publisher's own terms leave the use to a
+# human decision.
+_HELD_BY_TERMS = {
+    "nhk_news": "personal use only",
+}
+# Checked on 2026-11-02 against each publisher's own site: the feed is one the
+# institution itself links, it parses, and its item links stay on these hosts.
+_CONFIRMED_FEEDS = {
+    "turkey_mfa": (
+        "https://www.mfa.gov.tr/tr.rss.mfa?3fc6582e-a37b-40d1-847a-6914dc12fb60",
+        ("mfa.gov.tr",),
+    ),
+    "germany_federal_foreign_office": (
+        "https://www.auswaertiges-amt.de/static/includes/rss/Presse-RSS-Feed.xml",
+        ("auswaertiges-amt.de",),
+    ),
+}
 _NATIVE_SCRIPT_ALIASES = {
     "state:china": ("中国", "中华人民共和国", "中華人民共和國"),
     "state:russia": ("Россия", "Российская Федерация"),
@@ -108,6 +124,32 @@ def test_unconfirmed_endpoints_are_registered_but_never_collected():
         assert "unverified" in profile.caveat
         assert "a human must confirm this feed" in profile.caveat
     assert not _UNVERIFIED_SOURCE_IDS & collected
+
+
+def test_feeds_held_by_publisher_terms_are_never_collected():
+    sources = {item.source_id: item for item in source_profiles()}
+    collected = {item.source_id for item in rss_source_profiles()}
+
+    for source_id, reason in _HELD_BY_TERMS.items():
+        profile = sources[source_id]
+        assert profile.collection_enabled is False
+        assert profile.endpoint.startswith("https://")
+        assert reason in profile.caveat
+        assert "a human decides" in profile.caveat
+    assert not set(_HELD_BY_TERMS) & collected
+
+
+def test_confirmed_feeds_collect_from_their_checked_endpoints():
+    collected = {item.source_id: item for item in rss_source_profiles()}
+
+    assert set(_CONFIRMED_FEEDS) <= set(collected)
+    for source_id, (endpoint, hosts) in _CONFIRMED_FEEDS.items():
+        profile = collected[source_id]
+        assert profile.endpoint == endpoint
+        assert profile.endpoint.startswith("https://")
+        assert profile.canonical_hosts == hosts
+        assert "unverified" not in profile.caveat
+        assert "checked against the publisher's own site" in profile.caveat
 
 
 def test_first_party_statements_reach_past_the_anglosphere():

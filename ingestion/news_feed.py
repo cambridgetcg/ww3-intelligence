@@ -24,6 +24,7 @@ MAX_SEARCH_RESPONSE_BYTES = 5 * 1024 * 1024
 _HTTPS_CANONICAL_HOSTS = {
     "iaea_topnews": {"iaea.org", "www.iaea.org"},
     "russia_mfa": {"mid.ru", "www.mid.ru"},
+    "turkey_mfa": {"mfa.gov.tr", "www.mfa.gov.tr"},
 }
 
 

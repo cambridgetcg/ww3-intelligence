@@ -373,9 +373,10 @@ universal memory/wall-clock bound. HTTP reads are capped and timed; parsers
 still materialize each bounded response. Feed failures are reported by source
 and are not evidence that no event occurred.
 
-The active source registry is finite, hand-curated, and still entirely English:
-first-party publishers outside the original set are registered but disabled,
-because nothing here has fetched their endpoints to confirm they exist or serve
+The active source registry is finite, hand-curated, and mostly English: since
+0.1.5 the German and Turkish foreign ministries' own feeds collect too, and the
+other first-party publishers outside the original set stay registered but
+disabled until someone fetches their endpoints and confirms they exist and serve
 what their entries claim. Actor aliases carry native-script forms and are
 matched under the guard each script can bear, so a mention is visible in text
 where it previously could not be seen — but a registered alias is only ever
