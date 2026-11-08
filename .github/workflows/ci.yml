@@ -11,8 +11,14 @@ permissions:
 
 jobs:
   test:
+    name: test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is what the scheduled ingest runs on; 3.14 is the documented runtime.
+        python-version: ["3.11", "3.14"]
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -20,7 +26,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: |
             requirements.txt
@@ -33,3 +39,32 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+  ingest-lock:
+    # The scheduled ingest installs requirements-ingest.lock and nothing else.
+    # This installs that lock alone, with its hashes, and imports the ingest
+    # path, so an import the lock lacks fails here and not on the cron. It
+    # fetches no source.
+    name: ingest lock (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-ingest.lock
+
+      - name: Install the ingest lock alone
+        run: python -m pip install --require-hashes --no-deps -r requirements-ingest.lock
+
+      - name: Import the ingest path
+        env:
+          WW3_DISABLE_LLM: "1"
+        run: |
+          python -c "import cli.commands, cli.run_report, core.collection, ingestion.gdacs_feed, ingestion.news_feed, ingestion.seismic_feed"
+          python ww3.py ingest --help
