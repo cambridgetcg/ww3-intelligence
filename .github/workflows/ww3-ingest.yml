@@ -2,10 +2,28 @@
 # 越少嘢做越多收成就最好: the ingest loop is cron-shaped, so it lives on a cron.
 # The Streamlit dashboard stays local (streamlit run dashboard/app.py) — interactive by nature.
 #
-# State: the SQLite DB is passed between runs via actions cache (7-day retention;
-#        if the cache misses, ingest starts again from live feeds and the older rows
-#        are lost). The cache is the only copy here. ww3-export.yml sends a weekly
-#        encrypted copy to the private archive.
+# State: the SQLite ledger lives in the Actions cache. Each run restores the newest
+#        ww3-db-* entry, adds what it collects, and saves a new entry under its own run id
+#        and attempt. An entry nobody reads for 7 days is deleted. ww3-export.yml encrypts
+#        a weekly copy for the archive as an artifact, which expires too, so a copy outlives
+#        GitHub only once someone has collected and kept it.
+#
+#        A run that restores no ledger stops before collecting anything. Until 0.1.7 a
+#        miss started an empty ledger, saved it as the newest entry, and every later run
+#        built on that while the real one aged out. To start an empty ledger on purpose
+#        (a first run, or after the chain is lost), run this workflow by hand with
+#        start_new_ledger ticked. That only permits a miss: a ledger the cache still holds
+#        is restored and continued as usual.
+#
+#        Before saving, a guard folds the write-ahead log into the file the cache keeps,
+#        then requires SQLite's integrity check to pass and the observation count and
+#        highest id to be no lower than what was restored. A ledger that fails is not
+#        saved, and the restored entry stays the newest.
+#
+# Sources: each runs whatever the others did, and a guarded ledger is saved even when one
+#        failed, since the others' rows are good. The run then fails if USGS or the news
+#        feeds failed; GDACS may fail alone and leaves a warning. Each source writes its
+#        counts to the job summary and a warning for each failed or empty feed.
 #
 # The job reads the repository and writes nothing to it (contents: read; the model layer
 # that would write data/stream/ is off here). It installs only the hashed
@@ -16,7 +34,12 @@ name: ww3-ingest
 on:
   schedule:
     - cron: "*/30 * * * *"   # every 30 minutes — USGS 5-min / news 10-min polls collapse into one cron tick
-  workflow_dispatch: {}       # manual door: run any time from the Actions tab
+  workflow_dispatch:          # manual door: run any time from the Actions tab
+    inputs:
+      start_new_ledger:
+        description: "Start an empty ledger if none is restored (otherwise a cache miss fails the run)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -29,6 +52,9 @@ jobs:
   ingest:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      WW3_DISABLE_LLM: "1"
+      LEDGER: core/db/ww3.db
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,28 +69,122 @@ jobs:
       - name: Install (ingest only, pinned and hashed — no streamlit/plotly/telethon, no LLM)
         run: python -m pip install --require-hashes --no-deps -r requirements-ingest.lock
 
-      - name: Restore the database
-        uses: actions/cache@v4
+      - name: Restore the ledger
+        id: restore
+        uses: actions/cache/restore@v6
         with:
           path: core/db/ww3.db
-          key: ww3-db-${{ github.run_id }}
+          key: ww3-db-${{ github.run_id }}-${{ github.run_attempt }}
+          # The newest entry under this prefix, including the older ww3-db-<run id> keys.
           restore-keys: |
             ww3-db-
+          fail-on-cache-miss: ${{ !inputs.start_new_ledger }}
 
-      - name: Ingest — USGS seismic
+      - name: Record what was restored
+        id: restored
         env:
-          WW3_DISABLE_LLM: "1"
+          MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+          START_NEW_LEDGER: ${{ inputs.start_new_ledger }}
+        run: |
+          python - <<'PYEOF'
+          import os, sqlite3
+
+          path = os.environ["LEDGER"]
+          if os.path.exists(path):
+              # immutable=1 reads the file alone, exactly as the cache holds it.
+              con = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+              count, max_id = con.execute(
+                  "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM observation").fetchone()
+              con.close()
+              print(f"Restored {os.environ['MATCHED_KEY']}: "
+                    f"{count} observations, highest id {max_id}.")
+          elif os.environ.get("START_NEW_LEDGER") == "true":
+              count = max_id = 0
+              print("No ledger was restored; starting an empty one, as start_new_ledger asked.")
+          else:
+              raise SystemExit("No ledger was restored and start_new_ledger is not set.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"count={count}\nmax_id={max_id}\n")
+          PYEOF
+
+      # Each source may fail without stopping the others (continue-on-error); the
+      # last step fails the run for USGS or the news feeds.
+      - name: Ingest — USGS seismic
+        id: usgs
+        continue-on-error: true
         run: python ww3.py ingest usgs
 
       - name: Ingest — news feeds
-        env:
-          WW3_DISABLE_LLM: "1"
+        id: news
+        continue-on-error: true
         run: python ww3.py ingest news
 
       - name: Ingest — GDACS alerts
         # After the news feeds, and allowed to fail alone: a slow GDACS answer
         # must not cost a cycle of the other sources.
+        id: gdacs
         continue-on-error: true
-        env:
-          WW3_DISABLE_LLM: "1"
         run: python ww3.py ingest gdacs
+
+      - name: Check the ledger before saving it
+        id: guard
+        env:
+          RESTORED_COUNT: ${{ steps.restored.outputs.count }}
+          RESTORED_MAX_ID: ${{ steps.restored.outputs.max_id }}
+        run: |
+          python - <<'PYEOF'
+          import os, sqlite3
+
+          path = os.environ["LEDGER"]
+          if not os.path.exists(path):
+              raise SystemExit("Not saving: there is no ledger file.")
+          # The cache keeps the database file only, so anything still in the
+          # write-ahead log is folded into it first, and the file is what is checked.
+          con = sqlite3.connect(path)
+          busy = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+          con.close()
+          wal = path + "-wal"
+          if busy or (os.path.exists(wal) and os.path.getsize(wal) > 0):
+              raise SystemExit("Not saving: the write-ahead log could not be folded in.")
+          con = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+          check = con.execute("PRAGMA integrity_check").fetchall()
+          count, max_id = con.execute(
+              "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM observation").fetchone()
+          con.close()
+          restored_count = int(os.environ["RESTORED_COUNT"])
+          restored_max_id = int(os.environ["RESTORED_MAX_ID"])
+          problems = []
+          if check != [("ok",)]:
+              problems.append(f"the integrity check reported {len(check)} problem(s)")
+          if count < restored_count:
+              problems.append(f"{count} observations, fewer than the {restored_count} restored")
+          if max_id < restored_max_id:
+              problems.append(f"highest id {max_id}, below the {restored_max_id} restored")
+          if problems:
+              raise SystemExit("Not saving: " + "; ".join(problems) + ".")
+          print(f"Ledger checked: {count} observations ({count - restored_count} new), "
+                f"highest id {max_id}.")
+          PYEOF
+
+      - name: Save the ledger
+        # Only a ledger the guard passed, and also when a source failed.
+        if: steps.guard.outcome == 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: core/db/ww3.db
+          key: ww3-db-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Warn when GDACS failed alone
+        if: steps.gdacs.outcome == 'failure'
+        run: >-
+          echo "::warning title=GDACS ingest failed::The GDACS step failed. It may fail
+          alone, so the run is not failed for it; its log says why."
+
+      - name: Fail the run when USGS or the news feeds failed
+        if: steps.usgs.outcome == 'failure' || steps.news.outcome == 'failure'
+        env:
+          USGS_OUTCOME: ${{ steps.usgs.outcome }}
+          NEWS_OUTCOME: ${{ steps.news.outcome }}
+        run: |
+          echo "::error title=Ingest failed::USGS step: $USGS_OUTCOME. News step: $NEWS_OUTCOME. The guarded ledger was handed to the save step with what the other sources captured."
+          exit 1
