@@ -9,11 +9,13 @@
 #        GitHub only once someone has collected and kept it.
 #
 #        A run that restores no ledger stops before collecting anything. Until 0.1.7 a
-#        miss started an empty ledger, saved it as the newest entry, and every later run
-#        built on that while the real one aged out. To start an empty ledger on purpose
-#        (a first run, or after the chain is lost), run this workflow by hand with
-#        start_new_ledger ticked. That only permits a miss: a ledger the cache still holds
-#        is restored and continued as usual.
+#        miss would have started an empty ledger and saved it as the newest entry, and
+#        every later run would have built on that while the real one aged out. To start
+#        an empty ledger on purpose (a first run, or after the chain is lost), run this
+#        workflow by hand with start_new_ledger ticked. That only permits a miss: a
+#        ledger the cache still holds is restored and continued as usual. But a restore
+#        that fails for any other reason looks the same as a miss, so tick it only when
+#        the repository's cache list holds no ww3-db- entry.
 #
 #        Before saving, a guard folds the write-ahead log into the file the cache keeps,
 #        then requires SQLite's integrity check to pass and the observation count and
@@ -37,7 +39,7 @@ on:
   workflow_dispatch:          # manual door: run any time from the Actions tab
     inputs:
       start_new_ledger:
-        description: "Start an empty ledger if none is restored (otherwise a cache miss fails the run)"
+        description: "Start an empty ledger if none is restored (otherwise a miss fails the run). Only when no ww3-db- cache exists: a failed restore also counts as a miss."
         type: boolean
         default: false
 
