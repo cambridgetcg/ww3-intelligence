@@ -275,6 +275,7 @@ def test_cli_news_ingest_names_a_feed_that_answers_with_no_records():
     assert "Answered with no records" in result.output
     assert result.output.rstrip().endswith("occurred.")
     assert "two." in result.output.split("Answered with no records", 1)[1]
+    assert "::warning" not in result.output
 
 
 # About 300 bytes of HTML served with status 200, the shape a firewall's block
@@ -379,6 +380,99 @@ def test_cli_ingest_usgs_passes_its_limit_and_notes_a_full_answer():
     assert result.exit_code == 0, result.output
     fetch.assert_called_once_with(limit=3)
     assert "Reached the limit of 3; usgs may hold more than was read." in result.output
+
+
+def test_cli_news_ingest_annotates_actions_and_writes_a_counts_only_summary(
+    tmp_path, monkeypatch,
+):
+    summary = tmp_path / "step-summary.md"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    feeds = {
+        "one": "https://example.test/one.xml",
+        "two": "https://example.test/two.xml",
+        "three": "https://example.test/three.xml",
+    }
+    leaf = {
+        "source": "one", "source_record_id": "story-1", "type": "news",
+        "raw_text": json.dumps({"title": "Publisher headline text"}),
+    }
+    with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
+         patch(
+             "ingestion.news_feed.iter_feed_results",
+             return_value=iter([
+                 _fetched("one", "ok", [leaf]),
+                 _fetched("two", "empty"),
+                 _fetched("three", "failed", reason="not a feed: text/html, 301 bytes"),
+             ]),
+         ):
+        result = CliRunner().invoke(cli, ["ingest", "news"])
+
+    assert result.exit_code == 0, result.output
+    warnings = [line for line in result.output.splitlines() if line.startswith("::")]
+    assert warnings == [
+        "::warning title=News feed empty (two)::A well-formed feed with no items. "
+        "Not evidence that nothing was published.",
+        "::warning title=News feed failed (three)::not a feed: text/html, 301 bytes. "
+        "Nothing was read from this feed in this run.",
+    ]
+    table = summary.read_text(encoding="utf-8")
+    assert table.startswith("### ingest news\n")
+    assert (
+        "| source | status | received | first-seen | revisions | unchanged | invalid |"
+        in table
+    )
+    assert "| one | ok | 1 | 1 | 0 | 0 | 0 |" in table
+    assert "| two | empty | 0 | 0 | 0 | 0 | 0 |" in table
+    assert "| three | failed (not a feed: text/html, 301 bytes) | – | – | – | – | – |" in table
+    assert "Publisher headline text" not in table
+    assert "Publisher headline text" not in result.output
+
+
+def test_cli_ingest_failed_usgs_or_gdacs_fetch_warns_and_exits_nonzero(
+    tmp_path, monkeypatch,
+):
+    import requests
+
+    summary = tmp_path / "step-summary.md"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    failure = requests.ConnectionError("private detail https://example.test/?q=1")
+
+    with patch("ingestion.seismic_feed.fetch_seismic_events", side_effect=failure):
+        usgs = CliRunner().invoke(cli, ["ingest", "usgs"])
+    with patch("ingestion.gdacs_feed.fetch_gdacs_events", side_effect=failure):
+        gdacs = CliRunner().invoke(cli, ["ingest", "gdacs"])
+
+    assert usgs.exit_code == 1
+    assert (
+        "::warning title=USGS fetch failed::ConnectionError. "
+        "No USGS records were read in this run." in usgs.output
+    )
+    assert "The usgs fetch failed (ConnectionError); no records were returned." in (
+        usgs.output
+    )
+    assert gdacs.exit_code == 1
+    assert "::warning title=GDACS fetch failed::ConnectionError." in gdacs.output
+    for output in (usgs.output, gdacs.output):
+        assert "private detail" not in output
+        assert "example.test" not in output
+    table = summary.read_text(encoding="utf-8")
+    assert "### ingest usgs" in table and "### ingest gdacs" in table
+    assert "| usgs | failed (ConnectionError) | – | – | – | – | – |" in table
+    assert "| gdacs | failed (ConnectionError) | – | – | – | – | – |" in table
+    assert "private detail" not in table
+
+
+def test_cli_ingest_outside_actions_neither_annotates_nor_writes_a_summary(tmp_path):
+    assert "GITHUB_ACTIONS" not in os.environ
+    assert "GITHUB_STEP_SUMMARY" not in os.environ
+    with patch("ingestion.gdacs_feed.fetch_gdacs_events", side_effect=OSError("x")):
+        result = CliRunner().invoke(cli, ["ingest", "gdacs", "--dry-run"])
+
+    assert result.exit_code == 1
+    assert "::warning" not in result.output
+    assert "The gdacs fetch failed (OSError)" in result.output
 
 
 def test_cli_ingest_dry_run_creates_no_database_in_fresh_process(tmp_path):

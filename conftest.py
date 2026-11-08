@@ -26,6 +26,11 @@ os.environ["WW3_STREAM_PATH"] = str(TEST_STREAM_PATH)
 os.environ["WW3_DISABLE_LLM"] = "1"
 os.environ["BRAVE_SEARCH_API_KEY"] = ""
 os.environ["BRAVE_API_KEY"] = ""
+# The suite runs inside GitHub Actions too. An ingest under test must not
+# annotate the CI run or append to its job summary; tests that check that
+# output set these variables themselves.
+os.environ.pop("GITHUB_ACTIONS", None)
+os.environ.pop("GITHUB_STEP_SUMMARY", None)
 
 DENIAL_MESSAGE = "network access is disabled in the WW3 test suite"
 

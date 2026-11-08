@@ -348,7 +348,7 @@ def _feed_line(row) -> str:
 )
 def ingest(source, limit, analyze, dry_run):
     """Fetch bounded source records and capture immutable observations."""
-    from cli.run_report import SourceRow
+    from cli.run_report import SourceRow, report_to_actions
     from core.collection import collect_batch
     from ingestion.http import FETCH_EMPTY, FETCH_FAILED, fetch_result
     from ingestion.seismic_feed import (
@@ -443,6 +443,7 @@ def ingest(source, limit, analyze, dry_run):
             click.echo(
                 f"Reached the limit of {limit}; {source} may hold more than was read."
             )
+    report_to_actions(source, rows, dry_run=dry_run, echo=click.echo)
 
     if source == "news":
         if not RSS_FEEDS:
