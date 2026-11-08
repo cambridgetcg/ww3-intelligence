@@ -1,21 +1,37 @@
-# WW3 Intelligence — encrypted export of the observation database, for the private archive.
+# WW3 Intelligence — encrypted export of the observation database, for the archive.
 #
-# The Actions cache is the collector's only copy of what it has gathered, and a cache
-# nobody reads for 7 days is deleted. This job restores the newest copy (restore-only, so
-# it never saves a cache of its own), checks it, and encrypts it to the archive's public
-# key in ops/ww3-export.pub.asc. The private half of that key never comes near GitHub, so
-# the artifact is ciphertext to anyone else. A Mac pulls the artifact into the private
-# archive and deletes it; until then it expires on its own.
+# The Actions cache is the collector's only live copy of what it has gathered, and a
+# cache nobody reads for 7 days is deleted. This job restores the newest copy
+# (restore-only, so it never saves a cache of its own), checks it, and encrypts it to
+# two public keys:
+#   ops/ww3-export-lab.pub.asc  the archive key on the lab Mac, whose archive job
+#                               collects, decrypts and verifies every export
+#                               (ops/ARCHIVE.md);
+#   ops/ww3-export.pub.asc      the legacy key of 2026-10-22, kept as a second
+#                               recipient while whoever holds its private half is
+#                               unconfirmed.
+# Neither private half comes near GitHub, so the artifact is ciphertext to anyone else.
+# Artifacts are left to expire after 7 days, never deleted: the archive only downloads,
+# and another collector may still need a copy. The lab Mac dispatches this workflow once
+# a day; the weekly schedule is the floor when the lab is off.
 #
-# Most rows are publishers' text (headlines, feed summaries), kept privately and not
-# redistributed. Only counts by source are printed here.
+# On scheduled runs only, a second job commits ledger/status.json (the manifest's counts:
+# observations, max id, rows by source, the fetch-time span, the database digest and
+# this run's id; never publisher text) to main. GitHub disables the schedules of a
+# public repository after 60 days without repository activity, and nothing else here
+# commits on its own; a weekly push to main is the plainest activity there is. That job
+# alone holds contents: write. A push made with GITHUB_TOKEN starts no other workflow,
+# so the commit runs neither CI nor ingest.
+#
+# Most rows are publishers' text (headlines, feed summaries), kept in the archive and
+# not redistributed. Only counts by source are printed here.
 
 name: ww3-export
 
 on:
   schedule:
     - cron: "41 6 * * 1"     # weekly, Monday 06:41 UTC
-  workflow_dispatch: {}       # manual door: export now
+  workflow_dispatch: {}       # manual door, and the lab Mac's daily request
 
 permissions:
   contents: read
@@ -28,12 +44,43 @@ jobs:
   export:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      status: ${{ steps.manifest.outputs.status }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Require both archive keys
+        # An export the lab key cannot open is an export the archive never gets, so a
+        # missing or swapped key file stops the run before anything is restored.
+        env:
+          LAB_KEY: ops/ww3-export-lab.pub.asc
+          LAB_FPR: 1D9EF06569F94BFEB1C00D8066EFA0B2F44A4CE0
+          LEGACY_KEY: ops/ww3-export.pub.asc
+          LEGACY_FPR: 5D937004D0854C78CD6E9DFEAE9862B4C7F126D5
+        run: |
+          set -euo pipefail
+          GNUPGHOME="$(mktemp -d)"
+          export GNUPGHOME
+          require() {
+            if [ ! -s "$1" ]; then
+              echo "::error::$1 is missing, so the export could not reach every archive key."
+              exit 1
+            fi
+            got="$(gpg --batch --with-colons --show-keys "$1" | awk -F: '$1 == "fpr" { print $10; exit }')"
+            if [ "$got" != "$2" ]; then
+              echo "::error::$1 holds key $got, not $2."
+              exit 1
+            fi
+          }
+          require "$LAB_KEY" "$LAB_FPR"
+          require "$LEGACY_KEY" "$LEGACY_FPR"
+          rm -rf "$GNUPGHOME"
 
       - name: Restore the newest database (restore-only)
         id: db
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: core/db/ww3.db
           key: ww3-db-export-${{ github.run_id }}
@@ -47,6 +94,7 @@ jobs:
           exit 1
 
       - name: Check the database and write its manifest
+        id: manifest
         env:
           MATCHED_KEY: ${{ steps.db.outputs.cache-matched-key }}
         run: |
@@ -86,27 +134,110 @@ jobs:
           print(f"observations: {rows} (max id {max_id}), {first} → {last}")
           for source, n in by_source.items():
               print(f"  {source}: {n}")
+
+          # The public status line: counts and digests only, the same numbers this
+          # log already prints.
+          status = {
+              "schema": "ww3-ledger-status/1",
+              "export_run_id": os.environ["GITHUB_RUN_ID"],
+              "observations": rows,
+              "max_id": max_id,
+              "by_source": by_source,
+              "first_fetched_at": first,
+              "last_fetched_at": last,
+              "db_sha256": digest,
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write("status=" + json.dumps(status, sort_keys=True, separators=(",", ":")) + "\n")
+
+          # A ledger smaller than the last committed status is what a cache miss or a
+          # deliberate reset leaves behind. Warn here; the archive keeps the older copy
+          # and marks this one fork-suspected (ops/ARCHIVE.md).
+          shrank = []
+          try:
+              with open("ledger/status.json") as fh:
+                  previous = json.load(fh)
+          except FileNotFoundError:
+              previous = {}
+          for field in ("observations", "max_id"):
+              before, now = previous.get(field) or 0, manifest[field] or 0
+              if now < before:
+                  shrank.append(f"{field} {before} → {now}")
+          if shrank:
+              print("::warning::The ledger is smaller than ledger/status.json records ("
+                    + ", ".join(shrank) + "): a cache miss or a deliberate reset.")
+
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
               fh.write(f"**{rows}** observations, {first} → {last}\n\n")
+              if shrank:
+                  fh.write("Smaller than ledger/status.json: " + ", ".join(shrank) + "\n\n")
               fh.write("| source | rows |\n|---|---|\n")
               for source, n in by_source.items():
                   fh.write(f"| {source} | {n} |\n")
           PYEOF
 
-      - name: Encrypt to the archive key
+      - name: Encrypt to both archive keys
         run: |
           cp core/db/ww3.db export/ww3.db
           tar -C export -czf ww3-export.tar.gz ww3.db manifest.json
           gpg --batch --quiet --trust-model always \
+            --recipient-file ops/ww3-export-lab.pub.asc \
             --recipient-file ops/ww3-export.pub.asc \
             --output ww3-export.tar.gz.gpg --encrypt ww3-export.tar.gz
           rm -rf export ww3-export.tar.gz core/db/ww3.db
           ls -l ww3-export.tar.gz.gpg
 
       - name: Leave the ciphertext for the archive to collect
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ww3-export-${{ github.run_id }}
           path: ww3-export.tar.gz.gpg
           retention-days: 7
           if-no-files-found: error
+
+  status:
+    # Scheduled runs only: a manual or lab-dispatched export never commits.
+    if: github.event_name == 'schedule'
+    needs: export
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Commit ledger/status.json when it changed
+        env:
+          STATUS: ${{ needs.export.outputs.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p ledger
+          python3 - <<'PYEOF'
+          import json, os
+
+          status = json.loads(os.environ["STATUS"])
+          with open("ledger/status.json", "w") as fh:
+              json.dump(status, fh, indent=1, sort_keys=True)
+              fh.write("\n")
+          PYEOF
+          if [ -z "$(git status --porcelain -- ledger/status.json)" ]; then
+            echo "ledger/status.json unchanged — nothing to commit"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          observations="$(python3 -c 'import json; print(json.load(open("ledger/status.json"))["observations"])')"
+          git add ledger/status.json
+          git commit -m "ledger status: ${observations} observations (export run ${GITHUB_RUN_ID})"
+          # Only this job writes ledger/status.json, so a rebase onto a newer main
+          # cannot conflict with it.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            git pull --rebase origin main
+          done
+          echo "::error::ledger/status.json could not be pushed to main."
+          exit 1
