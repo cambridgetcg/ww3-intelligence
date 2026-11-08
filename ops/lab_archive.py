@@ -471,6 +471,13 @@ def ciphertext_from_zip(data: bytes) -> tuple[str, bytes]:
         return name, blob
 
 
+# What gpg must report for an export: encrypted to public keys, opened with one
+# of ours, and its integrity check passed.  ``gpg --decrypt`` also succeeds on a
+# message that was never encrypted (``gpg --store``), which in a public
+# repository would mean the artifact itself was readable by anyone.
+REQUIRED_GPG_STATUS = frozenset({"ENC_TO", "DECRYPTION_KEY", "DECRYPTION_OKAY"})
+
+
 def decrypt(ctx: Context, ciphertext: Path, plaintext: Path) -> None:
     if not ctx.archive.gnupg.is_dir():
         raise ArchiveError("the archive keyring directory does not exist")
@@ -478,6 +485,10 @@ def decrypt(ctx: Context, ciphertext: Path, plaintext: Path) -> None:
         ctx.gpg,
         "--homedir", str(ctx.archive.gnupg),
         "--batch", "--no-tty", "--quiet",
+        # The archive key has no passphrase, so nothing may ever ask for one: an
+        # unattended job must not wait on a pinentry.
+        "--pinentry-mode", "error",
+        "--status-fd", "1",
         "--max-output", str(MAX_PLAINTEXT_BYTES),
         "--output", str(plaintext),
         "--decrypt", str(ciphertext),
@@ -491,6 +502,16 @@ def decrypt(ctx: Context, ciphertext: Path, plaintext: Path) -> None:
         raise ArchiveError(f"gpg could not run ({exc.__class__.__name__})") from exc
     if done.returncode != 0 or not plaintext.is_file():
         raise ArchiveError(f"gpg could not decrypt the export: {_first_line(done.stderr)}")
+    reported = {
+        line.split()[1]
+        for line in (done.stdout or b"").decode("utf-8", "replace").splitlines()
+        if line.startswith("[GNUPG:] ") and len(line.split()) > 1
+    }
+    if not REQUIRED_GPG_STATUS <= reported or "NEED_PASSPHRASE_SYM" in reported:
+        raise Rejected(
+            "not-encrypted",
+            "gpg did not report a public-key encrypted, integrity-checked export",
+        )
 
 
 def untar_export(plaintext: Path, into: Path) -> dict[str, Path]:

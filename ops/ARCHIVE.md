@@ -112,7 +112,11 @@ repository's workflows; for a classic token that is the `repo` scope.
    64 MiB. That ciphertext is stored in `exports/` before anything else
    happens, and kept whatever follows.
 7. It is decrypted with the archive keyring into a 0700 working directory
-   under the root, with gpg's output capped at 2 GiB.
+   under the root, with gpg's output capped at 2 GiB and no passphrase prompt
+   allowed. gpg must report a message encrypted to public keys, opened with
+   the archive key, whose integrity check passed. `gpg --decrypt` also
+   succeeds on a message that was never encrypted; such an export is
+   rejected, because in a public repository it was readable by anyone.
 8. Only `ww3.db` and `manifest.json` are extracted, as regular files, by bare
    name. Any other member, link, path or duplicate rejects the export.
 9. The manifest must be `ww3-export/1` and name the same run.
@@ -135,7 +139,7 @@ each expires 7 days after upload.
 | `ok` | verified and kept | no |
 | `ok-reset` | was fork-suspected; a person accepted it as a new ledger | no |
 | `fork-suspected` | verified, but the ledger shrank | no; see below |
-| `rejected` | its content failed a check (zip, tar, manifest, digest, integrity, counts) | no |
+| `rejected` | its content failed a check (zip, encryption, tar, manifest, digest, integrity, counts) | no |
 | `ignored` | not uploaded by this repository's export workflow on `main` | no |
 | (none) | the download, `gh` or `gpg` failed | yes, at every pull while the artifact lasts |
 

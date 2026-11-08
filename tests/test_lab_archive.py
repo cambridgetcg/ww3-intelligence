@@ -362,6 +362,78 @@ def test_a_failed_decrypt_is_retried_rather_than_recorded(tmp_path, keyring):
     assert (ctx.archive.exports / "2026-11-09-501.tar.gz.gpg").exists()
 
 
+def test_a_missing_gpg_is_retried_rather_than_recorded(tmp_path, keyring):
+    gh = FakeGh()
+    gh.publish(9001, 501, make_export(keyring, tmp_path / "build", 501, rows(3)),
+               created="2026-11-09T04:21:00Z")
+    ctx = make_ctx(tmp_path, gh, keyring)
+    ctx.gpg = str(tmp_path / "no-such-gpg")
+
+    assert lab_archive.run(ctx, ["pull"]) == 1
+    assert index_of(ctx)["artifacts"] == {}
+
+    ctx.gpg = GPG
+    assert lab_archive.run(ctx, ["pull"]) == 0
+    assert index_of(ctx)["artifacts"]["9001"]["verdict"] == "ok"
+
+
+def test_a_missing_gh_fails_before_any_work(tmp_path):
+    def no_gh(argv):
+        raise FileNotFoundError(argv[0])
+
+    ctx = make_ctx(tmp_path, FakeGh())
+    ctx.github.runner = no_gh
+
+    assert lab_archive.run(ctx, ["pull"]) == 1
+    status = json.loads(ctx.archive.status_path.read_text())["subcommands"]["pull"]
+    assert status["ok"] is False
+    assert "could not run" in status["problems"][0]
+
+
+def test_an_export_that_was_never_encrypted_is_rejected(tmp_path, keyring):
+    # gpg --decrypt also "opens" a message made with gpg --store, which no key
+    # protects; in a public repository such an artifact is readable by anyone.
+    zipped = make_export(keyring, tmp_path / "build", 501, rows(3))
+    tarball = (tmp_path / "build" / "501" / "ww3-export.tar.gz")
+    stored = tmp_path / "build" / "501" / "stored.gpg"
+    _gpg(keyring.home, "--output", str(stored), "--store", str(tarball))
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive_zip:
+        archive_zip.writestr("ww3-export.tar.gz.gpg", stored.read_bytes())
+    assert zipped != buffer.getvalue()
+    gh = FakeGh()
+    gh.publish(9001, 501, buffer.getvalue(), created="2026-11-09T04:21:00Z")
+    ctx = make_ctx(tmp_path, gh, keyring)
+
+    assert lab_archive.run(ctx, ["pull"]) == 1
+
+    entry = index_of(ctx)["artifacts"]["9001"]
+    assert (entry["verdict"], entry["reason"]) == ("rejected", "not-encrypted")
+    assert not ctx.archive.latest.exists()
+
+
+@pytest.mark.parametrize("kind", [tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.DIRTYPE,
+                                  tarfile.FIFOTYPE])
+def test_untar_refuses_a_link_or_special_member_by_an_expected_name(tmp_path, kind):
+    tarball = tmp_path / "export.tar.gz"
+    with tarfile.open(tarball, "w:gz") as tar:
+        manifest = b"{}"
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(manifest)
+        tar.addfile(info, io.BytesIO(manifest))
+        link = tarfile.TarInfo("ww3.db")
+        link.type = kind
+        link.linkname = "manifest.json" if kind == tarfile.LNKTYPE else "/etc/passwd"
+        tar.addfile(link)
+    into = tmp_path / "into"
+    into.mkdir()
+
+    with pytest.raises(lab_archive.Rejected) as caught:
+        lab_archive.untar_export(tarball, into)
+    assert caught.value.code == "tar-members"
+    assert not (into / "ww3.db").exists() and not (into / "ww3.db").is_symlink()
+
+
 def test_only_the_newest_restored_copies_are_kept(tmp_path, keyring, monkeypatch):
     monkeypatch.setattr(lab_archive, "KEEP_RESTORED", 2)
     gh = FakeGh()
