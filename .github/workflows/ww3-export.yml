@@ -68,7 +68,9 @@ jobs:
               echo "::error::$1 is missing, so the export could not reach every archive key."
               exit 1
             fi
-            got="$(gpg --batch --with-colons --show-keys "$1" | awk -F: '$1 == "fpr" { print $10; exit }')"
+            # awk reads to the end: leaving early would hand gpg a SIGPIPE, which
+            # pipefail turns into a silent exit.
+            got="$(gpg --batch --with-colons --show-keys "$1" | awk -F: '$1 == "fpr" && !seen { print $10; seen = 1 }')"
             if [ "$got" != "$2" ]; then
               echo "::error::$1 holds key $got, not $2."
               exit 1
