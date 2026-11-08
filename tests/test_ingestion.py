@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from ingestion.http import FetchRefusal
 from ingestion.seismic_feed import fetch_seismic_events, parse_usgs_feature, usgs_query
 from ingestion.gdacs_feed import fetch_gdacs_events, gdacs_query, parse_gdacs_feature
 
@@ -252,6 +253,7 @@ from ingestion.news_feed import (
     fetch_brave_search,
     fetch_rss_feed,
     iter_feed_batches,
+    iter_feed_results,
     parse_rss_entry,
 )
 
@@ -421,6 +423,133 @@ def test_news_batches_apply_per_feed_and_total_limits():
         ("one", 2), ("two", 2), ("three", 1),
     ]
     assert [call.kwargs["limit"] for call in fetch.call_args_list] == [2, 2, 1]
+
+
+def test_fetch_rss_feed_refuses_an_html_page_served_as_success(requests_mock):
+    url = "https://example.test/rss/"
+    page = b"<html><head><title>Request Rejected</title></head><body>No.</body></html>"
+    requests_mock.get(url, content=page, headers={"Content-Type": "text/html"})
+
+    with pytest.raises(FetchRefusal) as refused:
+        fetch_rss_feed(url, "test-feed")
+
+    assert refused.value.reason == f"not a feed: text/html, {len(page)} bytes"
+    assert "Rejected" not in refused.value.reason
+
+
+@pytest.mark.parametrize("content_type", [
+    "application/rss+xml; charset=utf-8", "text/xml", "application/xml", None,
+])
+def test_fetch_rss_feed_returns_nothing_for_a_well_formed_empty_feed(
+    requests_mock, content_type,
+):
+    url = "https://example.test/empty.xml"
+    headers = {"Content-Type": content_type} if content_type else {}
+    requests_mock.get(url, headers=headers, content=b"""<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>Quiet</title>
+    <link>https://example.test/</link><description>d</description></channel></rss>""")
+
+    assert fetch_rss_feed(url, "test-feed") == []
+
+
+@pytest.mark.parametrize("content, content_type, reason", [
+    (b"", None, "not a feed: no declared type, {size} bytes"),
+    (b"<rss version='2.0'><channel><title>T", "text/xml",
+     "not a feed: text/xml, {size} bytes, unparsable"),
+    (b'{"items": []}', "application/json", "not a feed: application/json, {size} bytes"),
+    (b"<rss version='2.0'><channel/></rss>", "text/plain",
+     "not a feed: text/plain, {size} bytes"),
+])
+def test_fetch_rss_feed_refuses_answers_with_no_entries_that_are_not_feeds(
+    requests_mock, content, content_type, reason,
+):
+    url = "https://example.test/odd"
+    headers = {"Content-Type": content_type} if content_type else {}
+    requests_mock.get(url, content=content, headers=headers)
+
+    with pytest.raises(FetchRefusal) as refused:
+        fetch_rss_feed(url, "test-feed")
+
+    assert refused.value.reason == reason.format(size=len(content))
+
+
+def test_fetch_rss_feed_reads_entries_whatever_the_declared_type(requests_mock):
+    url = "https://example.test/mislabelled"
+    requests_mock.get(url, headers={"Content-Type": "text/html"}, content=b"""<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>T</title><item><title>Kept</title>
+    <link>https://example.test/kept</link></item></channel></rss>""")
+
+    assert [r["canonical_url"] for r in fetch_rss_feed(url, "test-feed")] == [
+        "https://example.test/kept",
+    ]
+
+
+def test_fetch_rss_feed_refuses_a_feed_whose_every_entry_is_unusable(requests_mock):
+    url = "https://example.test/broken-entries.xml"
+    requests_mock.get(url, content=b"<rss/>")
+    parsed_feed = MagicMock(entries=[{"bad": True}, {"bad": True}])
+
+    with patch("ingestion.news_feed.feedparser.parse", return_value=parsed_feed), \
+         patch("ingestion.news_feed.parse_rss_entry", side_effect=ValueError("x")):
+        with pytest.raises(FetchRefusal) as refused:
+            fetch_rss_feed(url, "feed")
+
+    assert refused.value.reason == "2 entries, none usable"
+
+
+def test_feed_results_classify_each_feed_with_a_short_reason(requests_mock):
+    feeds = {
+        "fine": "https://example.test/fine.xml",
+        "quiet": "https://example.test/quiet.xml",
+        "moved": "https://example.test/moved.xml",
+        "down": "https://example.test/down.xml",
+        "blocked": "https://example.test/blocked",
+    }
+    requests_mock.get(feeds["fine"], content=b"""<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>T</title><item><title>One</title>
+    <link>https://example.test/1</link></item></channel></rss>""")
+    requests_mock.get(feeds["quiet"], content=b"""<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>T</title></channel></rss>""")
+    requests_mock.get(
+        feeds["moved"], status_code=301, headers={"Location": "https://example.test/new"},
+    )
+    requests_mock.get(feeds["down"], status_code=503, text="private body")
+    requests_mock.get(
+        feeds["blocked"], content=b"<html>x</html>", headers={"Content-Type": "text/html"},
+    )
+
+    with patch("ingestion.news_feed.RSS_FEEDS", feeds):
+        results = list(iter_feed_results(limit_per_feed=10))
+
+    assert [(r.source, r.status, len(r.records), r.reason, r.limit) for r in results] == [
+        ("fine", "ok", 1, None, 10),
+        ("quiet", "empty", 0, None, 10),
+        ("moved", "failed", 0, "HTTP 301 redirect refused", 10),
+        ("down", "failed", 0, "HTTP 503", 10),
+        ("blocked", "failed", 0, "not a feed: text/html, 14 bytes", 10),
+    ]
+    assert len(requests_mock.request_history) == 5
+
+
+def test_news_batches_pass_a_short_feeds_unused_share_on():
+    feeds = {
+        "short": "https://example.test/short.xml",
+        "long": "https://example.test/long.xml",
+        "last": "https://example.test/last.xml",
+    }
+    available = {"short": 0, "long": 9, "last": 9}
+
+    def records(url, source, *, limit):
+        return [{"source": source}] * min(limit, available[source])
+
+    with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
+         patch("ingestion.news_feed.fetch_rss_feed", side_effect=records) as fetch:
+        batches = list(iter_feed_batches(limit_per_feed=4, total_limit=6))
+
+    assert [call.kwargs["limit"] for call in fetch.call_args_list] == [2, 3, 3]
+    assert [(source, len(batch)) for source, batch in batches] == [
+        ("short", 0), ("long", 3), ("last", 3),
+    ]
 
 
 def test_rss_invalid_entry_does_not_discard_valid_sibling(requests_mock, capsys):
