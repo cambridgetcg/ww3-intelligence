@@ -112,12 +112,14 @@ jobs:
       - name: Ingest — USGS seismic
         id: usgs
         continue-on-error: true
-        run: python ww3.py ingest usgs
+        run: python ww3.py ingest usgs --limit 1000
 
       - name: Ingest — news feeds
         id: news
         continue-on-error: true
-        run: python ww3.py ingest news
+        # Up to 500 entries from each enabled feed, so every feed is read in full
+        # unless one grows past that; a feed that reaches it says so.
+        run: python ww3.py ingest news --limit 500
 
       - name: Ingest — GDACS alerts
         # After the news feeds, and allowed to fail alone: a slow GDACS answer
