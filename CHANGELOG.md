@@ -42,22 +42,31 @@
   asks for every alert level over the last three days, at most 100 events,
   newest end date first. That day a three-day window filled all 100 places with
   events whose end date fell in the previous 22 hours, 89 of them Green
-  wildfire alerts, so a full page means more matched than were read. That the
-  window applies to the end date is observed, not documented.
+  wildfire alerts, and a second page held 100 more, all Green. So a full page
+  means more matched than were read, the page covers about the newest day
+  rather than three, and an older event is not read whatever its alert level:
+  three Orange drought alerts with an end date inside the window were on
+  neither page. That the window applies to the end date is observed, not
+  documented.
 - Keep the time of day in IAEA's dates. IAEA writes "26-11-06  14:46", with no
   zone; feedparser dropped the time, so every IAEA item was stored at 00:00 UTC
   on its date. The time is now kept, read as UTC as every zoneless time is
   here, and written without an offset, beside the publisher's own string
   (`published_as_served`). If IAEA means Vienna time, the stored times are one
   or two hours late. Each IAEA item still in its feed is filed once as a
-  revision (15 on 2026-11-08). No other feed's stored text changes: a replay of
-  every entry of the ten other enabled feeds gave identical bytes.
+  revision (15 on 2026-11-08). No other feed's stored text changed in a replay
+  of every entry the nine other answering feeds served that day: each was
+  captured with the previous code, then again with this release, and every one
+  was known unchanged. The Russian ministry's feed was blocked, so none of its
+  entries could be replayed.
 - Keep the scheduled ingest's ledger (`ww3-ingest.yml`):
   - A cache miss fails the run before anything is collected. Until now a miss
-    started an empty ledger, saved it as the newest entry, and every later run
-    and export built on that while the real one aged out. A manual run with
-    `start_new_ledger` is the deliberate way to begin one; it only permits a
-    miss.
+    would have started an empty ledger and saved it as the newest entry, and
+    every later run and export would have built on that while the real one aged
+    out. A manual run with `start_new_ledger` is the deliberate way to begin
+    one; it only permits a miss. A restore that fails for any other reason
+    looks the same as a miss, so tick it only when the repository's cache list
+    holds no `ww3-db-` entry.
   - The ledger is checked before it is saved: SQLite's integrity check, and an
     observation count and highest id no lower than what was restored. One that
     fails is not saved.
@@ -67,8 +76,8 @@
   - The job holds a read-only token. The event-stream commit step is gone: the
     file is gitignored, so it never committed anything. The job installs
     `requirements-ingest.lock`, exactly what ingest imports, pinned with hashes
-    at the versions production resolved on 2026-11-08, so no content hash
-    changes with this release.
+    at the versions production resolved on 2026-11-08, so installing them
+    changes no content hash.
 - Test on Python 3.11, which the scheduled ingest runs, as well as 3.14, and
   check in CI that the ingest lock alone covers the ingest path.
 
