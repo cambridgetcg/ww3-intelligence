@@ -4,9 +4,12 @@
 #
 # State: the SQLite DB is passed between runs via actions cache (7-day retention;
 #        if the cache misses, ingest starts again from live feeds and the older rows
-#        are lost). The cache is the only copy here: the event stream step below commits
-#        only when the model layer writes data/stream/, which this job keeps switched off.
-#        ww3-export.yml sends a weekly encrypted copy to the private archive.
+#        are lost). The cache is the only copy here. ww3-export.yml sends a weekly
+#        encrypted copy to the private archive.
+#
+# The job reads the repository and writes nothing to it (contents: read; the model layer
+# that would write data/stream/ is off here). It installs only the hashed
+# requirements-ingest.lock.
 
 name: ww3-ingest
 
@@ -16,7 +19,7 @@ on:
   workflow_dispatch: {}       # manual door: run any time from the Actions tab
 
 permissions:
-  contents: write              # commit the event stream
+  contents: read
 
 concurrency:
   group: ww3-ingest
@@ -27,17 +30,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false   # nothing here pushes
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: requirements-ingest.lock
 
-      - name: Install (ingest core only — no streamlit/plotly/telethon, no LLM)
-        run: |
-          python -m pip install --upgrade pip
-          pip install click peewee requests beautifulsoup4 feedparser rich python-dotenv PyYAML
+      - name: Install (ingest only, pinned and hashed — no streamlit/plotly/telethon, no LLM)
+        run: python -m pip install --require-hashes --no-deps -r requirements-ingest.lock
 
       - name: Restore the database
         uses: actions/cache@v4
@@ -64,15 +68,3 @@ jobs:
         env:
           WW3_DISABLE_LLM: "1"
         run: python ww3.py ingest gdacs
-
-      - name: Commit the event stream (if it grew)
-        run: |
-          git config user.name  "ww3-ingest bot"
-          git config user.email "actions@users.noreply.github.com"
-          if [ -f data/stream/events.jsonl ] && ! git diff --quiet data/stream/; then
-            git add data/stream/
-            git commit -m "ww3 ingest: $(date -u +%FT%TZ) — events from USGS + news + GDACS"
-            git push
-          else
-            echo "stream unchanged — nothing to commit"
-          fi
