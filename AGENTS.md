@@ -62,11 +62,27 @@ The test suite must use disposable DB/stream paths, deny DNS/socket access,
 replace the real Claude path, and leave `data/ww3.db` plus repository JSONL
 unchanged. Do not weaken these controls to make a test pass.
 
-Do not run real feeds, enable Claude, mutate the ignored local databases, or
-publish/deploy this repository unless the user explicitly puts that action in
-scope. `WW3_DISABLE_LLM` is default-disabled; deliberate model use requires an
-explicit analysis action plus a false value such as `0`.
+Do not run real feeds, enable Claude, mutate the ignored local databases,
+dispatch workflows, run `ops/lab_archive.py` against GitHub, install the lab
+LaunchAgents, or publish/deploy this repository unless the user explicitly puts
+that action in scope. `WW3_DISABLE_LLM` is default-disabled; deliberate model
+use requires an explicit analysis action plus a false value such as `0`.
 
-The GitHub Pages workflow deploys documentation and copied registry/schema
-artifacts only. It is not evidence that the Python/SQLite collector, dashboard,
-feeds, RhetorLint, or model layer is hosted.
+## Production and archive
+
+This repository is public. Production collection runs on GitHub Actions
+(`ww3-ingest.yml`), into a SQLite ledger carried in the Actions cache;
+`ww3-export.yml` encrypts copies of it, and the lab Mac collects, verifies and
+keeps them (`ops/ARCHIVE.md`). The Fly runtime was retired on 2026-09-01 and
+its clean-up is pending; do not describe it as live.
+
+- The archive's keyring, ciphertexts and databases stay on the lab Mac. Never
+  commit them, read them into a chat, or print publisher text from them;
+  `ops/lab_archive.py` prints counts, identifiers and timestamps only.
+- The archive never deletes a GitHub artifact; they expire on their own.
+- Only the scheduled export's status job may write to `main`, and only
+  `ledger/status.json`, which holds counts and a digest, never publisher text.
+
+The public documentation is a reviewed copy served from cambridgetcg.github.io;
+this repository deploys nothing to Pages. Neither that copy nor the Actions
+collector is evidence that the dashboard, RhetorLint, or model layer is hosted.
