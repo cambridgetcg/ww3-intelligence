@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6 — 2026-11-08
+
+- `ingest news` prints one line per feed that answered (records received and,
+  outside a dry run, captured) and names every feed that answered with no
+  records. Until now a feed returning a challenge page or an empty document
+  counted as a success inside the total.
+
 ## 0.1.5 — 2026-11-08
 
 - Collect two of the publishers registered in 0.1.3: the Turkish Ministry of

@@ -211,6 +211,8 @@ def test_cli_news_ingest_reports_partial_and_total_source_failure():
 
     assert partial.exit_code == 0, partial.output
     assert "News feed fetches succeeded: 1/2" in partial.output
+    assert "  one: 1 received, 1 captured." in partial.output
+    assert "Answered with no records" not in partial.output
     assert Observation.select().count() == 1
 
     with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
@@ -219,6 +221,33 @@ def test_cli_news_ingest_reports_partial_and_total_source_failure():
 
     assert failed.exit_code == 1
     assert "All configured news feed fetches failed" in failed.output
+
+
+def test_cli_news_ingest_names_a_feed_that_answers_with_no_records():
+    feeds = {
+        "one": "https://example.test/one.xml",
+        "two": "https://example.test/two.xml",
+    }
+    leaf = {
+        "source": "one", "source_record_id": "story-1",
+        "type": "news", "raw_text": "{}",
+    }
+    with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
+         patch(
+             "ingestion.news_feed.iter_feed_batches",
+             return_value=iter([("one", [leaf]), ("two", [])]),
+         ):
+        result = CliRunner().invoke(
+            cli, ["ingest", "news", "--limit", "2", "--dry-run"]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "News feed fetches succeeded: 2/2" in result.output
+    assert "  one: 1 received." in result.output
+    assert "  two: 0 received." in result.output
+    assert "Answered with no records" in result.output
+    assert result.output.rstrip().endswith("occurred.")
+    assert "two." in result.output.split("Answered with no records", 1)[1]
 
 
 def test_cli_ingest_dry_run_creates_no_database_in_fresh_process(tmp_path):

@@ -354,12 +354,17 @@ def ingest(source, limit, analyze, dry_run):
     observations = []
     invalid_types = Counter()
     successful_batches = 0
-    for _, leaves in source_batches():
+    # One row per answered source, so a feed that answers with nothing is
+    # visible instead of hidden in the total.
+    per_source = []
+    for batch_source, leaves in source_batches():
         successful_batches += 1
         totals["received"] += len(leaves)
         if dry_run:
+            per_source.append((batch_source, len(leaves), None))
             continue
         batch = collect_batch(leaves)
+        per_source.append((batch_source, len(leaves), batch.new + batch.revision))
         for field in ("new", "known", "revision", "invalid"):
             totals[field] += getattr(batch, field)
         observations.extend(batch.observations)
@@ -374,6 +379,17 @@ def ingest(source, limit, analyze, dry_run):
         click.echo(
             f"News feed fetches succeeded: {successful_batches}/{expected_batches}."
         )
+        for batch_source, received, captured in per_source:
+            line = f"  {batch_source}: {received} received"
+            if captured is not None:
+                line += f", {captured} captured"
+            click.echo(line + ".")
+        empty = [batch_source for batch_source, received, _ in per_source if received == 0]
+        if empty:
+            click.echo(
+                "Answered with no records (an empty feed, a challenge page or a "
+                f"changed format; not evidence that nothing happened): {', '.join(empty)}."
+            )
         if expected_batches == 0:
             raise click.ClickException("No news feeds are configured.")
         if successful_batches == 0:
