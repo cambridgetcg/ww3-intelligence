@@ -1,8 +1,19 @@
 # tests/test_ingestion.py
+import re
+from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlsplit
+
 import pytest
 
-from ingestion.seismic_feed import fetch_seismic_events, parse_usgs_feature
+from ingestion.seismic_feed import fetch_seismic_events, parse_usgs_feature, usgs_query
 from ingestion.gdacs_feed import fetch_gdacs_events, parse_gdacs_feature
+
+
+def _query(request) -> dict:
+    """The query exactly as sent; requests_mock's own ``qs`` lowercases it."""
+    return {
+        key: values[0] for key, values in parse_qs(urlsplit(request.url).query).items()
+    }
 
 
 def test_parse_usgs_feature():
@@ -111,6 +122,38 @@ def test_fetch_seismic_events_is_limited_and_skips_invalid_siblings(requests_moc
 
     assert [record["source_record_id"] for record in results] == ["valid-1"]
     assert requests_mock.request_history[0].qs["limit"] == ["3"]
+
+
+def test_usgs_query_is_a_rolling_window_to_the_second_with_no_end():
+    now = datetime(2026, 11, 8, 20, 30, 15, 900_000, tzinfo=timezone.utc)
+
+    assert usgs_query(min_magnitude=4.0, days=7, limit=1000, now=now) == {
+        "format": "geojson",
+        "starttime": "2026-11-01T20:30:15",
+        "minmagnitude": 4.0,
+        "orderby": "time",
+        "limit": 1000,
+    }
+
+
+def test_fetch_seismic_events_window_includes_events_from_today(requests_mock):
+    requests_mock.get(
+        "https://earthquake.usgs.gov/fdsnws/event/1/query", json={"features": []},
+    )
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+    fetch_seismic_events()
+    after = datetime.now(timezone.utc)
+
+    sent = _query(requests_mock.request_history[0])
+    # No bare date: a time to the second, and no endtime, which FDSN reads as
+    # the present moment.
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", sent["starttime"])
+    assert "endtime" not in sent
+    start = datetime.fromisoformat(sent["starttime"]).replace(tzinfo=timezone.utc)
+    assert before - timedelta(days=7) <= start <= after - timedelta(days=7)
+    midnight = after.replace(hour=0, minute=0, second=0, microsecond=0)
+    for event_time in (midnight + timedelta(seconds=1), after - timedelta(minutes=1)):
+        assert start <= event_time <= after
 
 
 def _gdacs_feature(**property_overrides):
