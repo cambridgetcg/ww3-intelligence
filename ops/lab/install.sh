@@ -114,6 +114,10 @@ PYEOF
         sleep 0.5
       done
     fi
+    # A label someone once ran `launchctl disable` on stays disabled across
+    # bootouts and reboots, and bootstrap then fails; installing means wanting
+    # it to run. If enabling fails, bootstrap below still says why.
+    launchctl enable "gui/$uid/$label" || true
     launchctl bootstrap "gui/$uid" "$target"
     echo "loaded $label"
   else
