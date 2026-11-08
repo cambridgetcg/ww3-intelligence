@@ -1,5 +1,6 @@
 # tests/test_ingestion.py
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 
@@ -267,6 +268,73 @@ def test_parse_rss_entry():
     assert result["source"] == "reuters"
     assert "Synthetic earthquake report" in result["raw_text"]
     assert result["confidence"] == "not-assessed"
+
+
+def test_parse_rss_entry_keeps_the_stored_text_of_a_dated_entry_unchanged():
+    # The bytes every RSS record has been stored under. Reading IAEA's dates
+    # must not alter them, or every live entry of every other feed would be
+    # filed as a revision on the next run.
+    entry = {
+        "title": "T",
+        "summary": "S",
+        "link": "https://example.test/a",
+        "published": "Mon, 03 Mar 2026 12:00:00 GMT",
+        "published_parsed": time.struct_time((2026, 3, 3, 12, 0, 0, 0, 62, 0)),
+    }
+
+    result = parse_rss_entry(entry, source="bbc_world")
+
+    assert result["raw_text"] == (
+        '{"title": "T", "summary": "S", "link": "https://example.test/a", '
+        '"published": "2026-03-03T12:00:00+00:00"}'
+    )
+    assert result["published_at"] == "2026-03-03T12:00:00+00:00"
+
+
+def test_parse_rss_entry_reads_the_time_in_a_two_digit_year_date():
+    entry = {
+        "title": "Statement",
+        "link": "https://www.iaea.org/newscenter/statements/example",
+        "published": "26-11-06  14:46",
+        # What feedparser makes of it: the date, with the time dropped.
+        "published_parsed": time.struct_time((2026, 11, 6, 0, 0, 0, 4, 310, 0)),
+    }
+
+    result = parse_rss_entry(entry, source="iaea_topnews")
+    raw = json.loads(result["raw_text"])
+
+    # No zone is stated, so none is written; the ledger reads it as UTC.
+    assert result["published_at"] == "2026-11-06T14:46:00"
+    assert raw["published"] == "2026-11-06T14:46:00"
+    assert raw["published_as_served"] == "26-11-06  14:46"
+    from core.observations import parse_timestamp
+    assert parse_timestamp(result["published_at"]) == datetime(2026, 11, 6, 14, 46)
+
+
+@pytest.mark.parametrize("served", ["26-07-15", "26-13-06  14:46", "2026-11-06 14:46"])
+def test_parse_rss_entry_leaves_other_dates_to_feedparser(served):
+    entry = {
+        "title": "Item",
+        "published": served,
+        "published_parsed": time.struct_time((2026, 7, 15, 0, 0, 0, 2, 196, 0)),
+    }
+
+    result = parse_rss_entry(entry, source="iaea_topnews")
+
+    assert result["published_at"] == "2026-07-15T00:00:00+00:00"
+    assert "published_as_served" not in json.loads(result["raw_text"])
+
+
+def test_fetch_rss_feed_reads_iaea_times_from_the_document(requests_mock):
+    url = "https://example.test/topnews"
+    requests_mock.get(url, content=b"""<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>Test</title><item>
+    <title>Synthetic statement</title><link>https://www.iaea.org/statements/1</link>
+    <pubDate>26-11-06  14:46</pubDate></item></channel></rss>""")
+
+    (record,) = fetch_rss_feed(url, "iaea_topnews")
+
+    assert record["published_at"] == "2026-11-06T14:46:00"
 
 
 def test_parse_rss_entry_returns_dict_keys():

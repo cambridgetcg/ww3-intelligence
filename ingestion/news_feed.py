@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
@@ -99,18 +100,48 @@ def fetch_rss_feed(
     return results
 
 
+# IAEA dates its items like "26-11-06  14:46": a two-digit year, two spaces, a
+# time and no zone. feedparser keeps the date and drops the time, which stored
+# every IAEA item at 00:00 UTC. Only this exact shape is read here, so no other
+# feed's stored text changes.
+_TWO_DIGIT_YEAR_AND_TIME = re.compile(r"\d\d-\d\d-\d\d\s+\d\d:\d\d", re.ASCII)
+
+
+def _two_digit_year_and_time(value) -> str | None:
+    """Read "YY-MM-DD  HH:MM" as a time with no zone, or return None.
+
+    No zone is stated, so the time is read as UTC, as every zoneless time is
+    in this ledger, and it is written without an offset so the stored record
+    does not claim one. If IAEA means Vienna time, the stored time is one
+    hour (CET) or two (CEST) late; which zone IAEA means is unverified.
+    """
+    if not isinstance(value, str) or len(value) > 32:
+        return None
+    text = value.strip()
+    if not _TWO_DIGIT_YEAR_AND_TIME.fullmatch(text):
+        return None
+    try:
+        return datetime.strptime(" ".join(text.split()), "%y-%m-%d %H:%M").isoformat()
+    except ValueError:
+        return None
+
+
 def parse_rss_entry(entry, source: str) -> dict:
     title = entry.get("title", "")
     summary = entry.get("summary", entry.get("description", ""))
     title = str(title)[:1_000]
     summary = str(summary)[:MAX_ENTRY_SUMMARY_CHARS]
     canonical_url = _canonical_link(entry.get("link"), source)
-    published_at = entry.get("published") or entry.get("updated")
+    published_as_served = entry.get("published") or entry.get("updated")
+    published_at = published_as_served
+    zoneless_time = _two_digit_year_and_time(published_as_served)
     # A few official feeds publish two-digit years (for example 26-07-15).
     # feedparser exposes a normalized tuple even when the original string is
     # not understood by our generic timestamp normalizer.
     parsed_time = entry.get("published_parsed") or entry.get("updated_parsed")
-    if parsed_time and len(parsed_time) >= 6:
+    if zoneless_time is not None:
+        published_at = zoneless_time
+    elif parsed_time and len(parsed_time) >= 6:
         try:
             published_at = datetime(
                 *[int(part) for part in parsed_time[:6]], tzinfo=timezone.utc
@@ -124,6 +155,9 @@ def parse_rss_entry(entry, source: str) -> dict:
         "link": canonical_url,
         "published": published_at,
     }
+    if zoneless_time is not None:
+        # The publisher's own string, so the zone reading above can be undone.
+        raw_payload["published_as_served"] = published_as_served
     content = _first_party_content(entry, source)
     if content:
         raw_payload["content"] = content
