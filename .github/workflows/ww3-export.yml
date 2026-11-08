@@ -155,15 +155,24 @@ jobs:
           # A ledger smaller than the last committed status is what a cache miss or a
           # deliberate reset leaves behind. Warn here; the archive keeps the older copy
           # and marks this one fork-suspected (ops/ARCHIVE.md).
+          # The export never depends on that file: one that is absent or
+          # unreadable only costs this comparison.
           shrank = []
           try:
               with open("ledger/status.json") as fh:
                   previous = json.load(fh)
           except FileNotFoundError:
               previous = {}
+          except (OSError, ValueError) as exc:
+              print(f"::warning::ledger/status.json could not be read "
+                    f"({exc.__class__.__name__}), so the ledger was not compared with it.")
+              previous = {}
+          if not isinstance(previous, dict):
+              print("::warning::ledger/status.json is not an object, so the ledger was not compared with it.")
+              previous = {}
           for field in ("observations", "max_id"):
               before, now = previous.get(field) or 0, manifest[field] or 0
-              if now < before:
+              if isinstance(before, int) and now < before:
                   shrank.append(f"{field} {before} → {now}")
           if shrank:
               print("::warning::The ledger is smaller than ledger/status.json records ("
