@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -17,8 +17,12 @@ if _PROFILE is None:  # Registry validation should make this impossible.
 
 GDACS_URL = _PROFILE.endpoint
 MAX_GDACS_RESPONSE_BYTES = 5 * 1024 * 1024
+# GDACS serves at most 100 events a page, so this is also the server's bound.
 MAX_GDACS_EVENTS = 100
 DEFAULT_GDACS_EVENTS = 50
+DEFAULT_GDACS_DAYS = 3
+GDACS_EVENT_TYPES = ("EQ", "TC", "FL", "VO", "DR", "WF")
+GDACS_ALERT_LEVELS = ("Green", "Orange", "Red")
 
 
 def parse_gdacs_feature(feature: dict) -> dict:
@@ -78,7 +82,47 @@ def parse_gdacs_feature(feature: dict) -> dict:
     }
 
 
-def fetch_gdacs_events(limit: int = DEFAULT_GDACS_EVENTS) -> list[dict]:
+def gdacs_query(
+    *,
+    limit: int,
+    days: int = DEFAULT_GDACS_DAYS,
+    now: datetime | None = None,
+) -> dict:
+    """Ask GDACS's SEARCH list for recent events at every alert level.
+
+    What this selects, as far as it can be seen from outside: GDACS documents
+    ``eventlist``, ``alertlevel``, ``fromDate``, ``toDate`` and ``pageSize``
+    (at most 100), and orders the list by each event's ``todate``, newest
+    first. It has no ``limit`` parameter; the one this adapter used to send
+    was ignored, so it received GDACS's default list, which on 2026-11-08 was
+    82 Orange and Red events whose ``todate`` reached back a year, none of
+    them current.
+
+    ``fromDate`` is a UTC time ``days`` back. That the window is applied to
+    ``todate`` is observed, not documented: on 2026-11-08 every event
+    returned had a ``todate`` inside it, while some ``fromdate`` values were
+    two weeks older. ``toDate`` is left unset; that day the first page was the
+    same with it set to the present moment. A full page means more events
+    matched than were read: that day a three-day window filled all 100 places
+    with events whose ``todate`` fell in the 22 hours before the query, 89 of
+    them Green wildfire alerts. Green is GDACS's lowest alert level, not an
+    absence of a hazard.
+    """
+    now = now or datetime.now(timezone.utc)
+    start = now.astimezone(timezone.utc) - timedelta(days=days)
+    return {
+        "eventlist": ";".join(GDACS_EVENT_TYPES),
+        "alertlevel": ";".join(GDACS_ALERT_LEVELS),
+        "fromDate": start.strftime("%Y-%m-%dT%H:%M:%S"),
+        "pageSize": limit,
+    }
+
+
+def fetch_gdacs_events(
+    limit: int = DEFAULT_GDACS_EVENTS,
+    *,
+    days: int = DEFAULT_GDACS_DAYS,
+) -> list[dict]:
     if not 1 <= limit <= MAX_GDACS_EVENTS:
         raise ValueError(f"GDACS event limit must be between 1 and {MAX_GDACS_EVENTS}")
     content = fetch_limited(
@@ -86,7 +130,7 @@ def fetch_gdacs_events(limit: int = DEFAULT_GDACS_EVENTS) -> list[dict]:
         request_get=requests.get,
         max_bytes=MAX_GDACS_RESPONSE_BYTES,
         total_timeout=30,
-        params={"limit": limit},
+        params=gdacs_query(limit=limit, days=days),
         timeout=(3.05, 15),
         headers={"User-Agent": "ww3-intelligence/observation-ledger"},
     )
@@ -103,6 +147,7 @@ def fetch_gdacs_events(limit: int = DEFAULT_GDACS_EVENTS) -> list[dict]:
 
 
 __all__ = [
-    "DEFAULT_GDACS_EVENTS", "GDACS_URL", "MAX_GDACS_EVENTS",
-    "fetch_gdacs_events", "parse_gdacs_feature",
+    "DEFAULT_GDACS_DAYS", "DEFAULT_GDACS_EVENTS", "GDACS_ALERT_LEVELS",
+    "GDACS_EVENT_TYPES", "GDACS_URL", "MAX_GDACS_EVENTS",
+    "fetch_gdacs_events", "gdacs_query", "parse_gdacs_feature",
 ]

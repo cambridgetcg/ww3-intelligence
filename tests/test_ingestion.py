@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from ingestion.seismic_feed import fetch_seismic_events, parse_usgs_feature, usgs_query
-from ingestion.gdacs_feed import fetch_gdacs_events, parse_gdacs_feature
+from ingestion.gdacs_feed import fetch_gdacs_events, gdacs_query, parse_gdacs_feature
 
 
 def _query(request) -> dict:
@@ -207,7 +207,40 @@ def test_fetch_gdacs_events_is_bounded_and_skips_malformed_sibling(requests_mock
     result = fetch_gdacs_events(limit=2)
 
     assert [item["source_record_id"] for item in result] == ["VO:1000144:1"]
-    assert requests_mock.request_history[0].qs["limit"] == ["2"]
+    sent = _query(requests_mock.request_history[0])
+    assert sent["pageSize"] == "2"
+    assert "limit" not in sent
+
+
+def test_gdacs_query_asks_for_recent_events_at_every_alert_level():
+    now = datetime(2026, 11, 8, 22, 0, 0, tzinfo=timezone.utc)
+
+    assert gdacs_query(limit=100, now=now) == {
+        "eventlist": "EQ;TC;FL;VO;DR;WF",
+        "alertlevel": "Green;Orange;Red",
+        "fromDate": "2026-11-05T22:00:00",
+        "pageSize": 100,
+    }
+    assert gdacs_query(limit=50, days=1, now=now)["fromDate"] == "2026-11-07T22:00:00"
+
+
+def test_fetch_gdacs_events_keeps_its_client_side_bound(requests_mock):
+    from ingestion.gdacs_feed import GDACS_URL
+
+    # GDACS ignored the old ``limit`` parameter; a server that sends more than
+    # was asked for is still cut to the bound here.
+    features = [_gdacs_feature(eventid=index) for index in range(5)]
+    requests_mock.get(GDACS_URL, json={"type": "FeatureCollection", "features": features})
+
+    result = fetch_gdacs_events(limit=3)
+
+    assert [item["source_record_id"] for item in result] == [
+        "VO:0:1", "VO:1:1", "VO:2:1",
+    ]
+    sent = _query(requests_mock.request_history[0])
+    assert sent["alertlevel"] == "Green;Orange;Red"
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", sent["fromDate"])
+    assert "toDate" not in sent
 
 
 # News feed tests
