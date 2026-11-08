@@ -105,8 +105,12 @@ def gdacs_query(
     same with it set to the present moment. A full page means more events
     matched than were read: that day a three-day window filled all 100 places
     with events whose ``todate`` fell in the 22 hours before the query, 89 of
-    them Green wildfire alerts. Green is GDACS's lowest alert level, not an
-    absence of a hazard.
+    them Green wildfire alerts, and a second page held 100 more, all Green as
+    well. So the page read covers about the newest day, not three, and an
+    event whose ``todate`` is older than the page's oldest is not read
+    whatever its alert level: three Orange drought alerts with a ``todate``
+    inside the window were on neither page. Green is GDACS's lowest alert
+    level, not an absence of a hazard.
     """
     now = now or datetime.now(timezone.utc)
     start = now.astimezone(timezone.utc) - timedelta(days=days)
