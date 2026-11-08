@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.1.5 — 2026-11-08
+
+- Collect two of the publishers registered in 0.1.3: the Turkish Ministry of
+  Foreign Affairs (its Turkish statements feed) and the German Federal Foreign
+  Office (its German press releases and speeches). Each endpoint was checked
+  against the publisher's own site, fetched with the collector's own code, and
+  its item links matched against the canonical hosts it carries.
+- Collect GDACS alerts again. The scheduled ingest has run only USGS and the
+  news feeds since it moved to GitHub Actions on 2026-09-01, so no GDACS record
+  was captured after that date. The step runs after the news feeds and may fail
+  on its own without stopping them.
+- Record NHK's verified feed (its Japanese international category on
+  `news.web.nhk`, where NHK's own feeds now live) but keep it off: NHK's RSS
+  terms allow personal use only, with no re-provision by programs, and its
+  robots.txt asks AI crawlers to stay away. Whether this ledger fits is a human
+  decision.
+- Upgrade the Turkish ministry's `http://` item links to `https` on its own
+  hosts, the way the IAEA and Russian ministry links already are; each https
+  form was fetched and answered without a redirect.
+- Reachability was shown only from outside the collector's network. The first
+  runner collections must confirm each feed answers there.
+- Still off, each for its own reason:
+  - `china_mfa`: no feed the ministry offers; its only listing is JSON, which
+    would need a new adapter.
+  - `iran_mfa`: no feed found, and every host answers a cookieless client with
+    a cookie challenge the collector cannot pass.
+  - `israel_mfa`: held; gov.il refuses automated clients, so whether an MFA
+    feed exists could not be seen.
+  - `india_mea`: no feed; every feed path ends at an error page.
+  - `ukraine_mfa`: held; the site refuses automated clients, so whether a feed
+    exists could not be seen.
+  - `japan_mofa`: held; the only official feed carries consular safety notices,
+    not diplomatic statements, and enabling it would mislabel the entry.
+  - `saudi_mofa`: held; no feed found, and the host does not answer from US
+    networks.
+  - `france_diplomatie`: no feed on the relaunched site; the legacy feeds are
+    refused.
+  - `kcna`: no feed on the agency's own domain, and it serves no working TLS.
+  - `aljazeera_arabic`: held; every pubDate is UTC clock time labelled +0300,
+    so each record would be dated three hours early.
+  - `lemonde`: held; the feed's terms restrict it to personal use, and whether
+    this collector fits them is not ours to decide.
+  - `xinhua`: no live feed; Xinhua's own files stopped in December 2022.
+
+A registry entry is configuration, not authentication: an enabled feed says
+where to look, and each record still has to match the hosts it names before it
+counts as the publisher speaking.
+
 ## 0.1.4 — 2026-08-03
 
 - Match an alias in whichever canonically equivalent spelling a publisher
