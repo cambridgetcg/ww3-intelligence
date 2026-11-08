@@ -80,8 +80,9 @@ its clean-up is pending; do not describe it as live.
   commit them, read them into a chat, or print publisher text from them;
   `ops/lab_archive.py` prints counts, identifiers and timestamps only.
 - The archive never deletes a GitHub artifact; they expire on their own.
-- Only the scheduled export's status job may write to `main`, and only
-  `ledger/status.json`, which holds counts and a digest, never publisher text.
+- No workflow writes to `main` except the scheduled export's status job, and
+  it writes only `ledger/status.json`, which holds counts and a digest, never
+  publisher text.
 
 The public documentation is a reviewed copy served from cambridgetcg.github.io;
 this repository deploys nothing to Pages. Neither that copy nor the Actions

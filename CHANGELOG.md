@@ -21,10 +21,13 @@
   back on.
 - An artifact counts as an export only if GitHub records it as uploaded by this
   repository's own export workflow on `main`. The archive key's public half is
-  public, so a ciphertext the key opens says nothing about who made it.
-- Remove the GitHub Pages workflow. Project Pages has been off since
-  2026-09-25 and the workflow failed on every push since; the public
-  documentation is a reviewed copy served from cambridgetcg.github.io.
+  public, so a ciphertext the key opens says nothing about who made it. An
+  export gpg can read without any key (`gpg --store`) is rejected: in a public
+  repository that artifact was readable by anyone.
+- Remove the GitHub Pages workflow. Project Pages is off, probably since about
+  2026-09-25 (a date inferred, not read from GitHub), and the workflow has
+  failed on every push since it went off; the public documentation is a
+  reviewed copy served from cambridgetcg.github.io.
 - The documentation no longer describes the Fly runtime or its dashboard as
   live. It was retired on 2026-09-01 and clean-up of its app and volume is
   pending; the ledger it held before that date was never carried over.

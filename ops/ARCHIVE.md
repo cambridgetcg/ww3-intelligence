@@ -86,7 +86,10 @@ Both jobs are LaunchAgents, so they run only while the archive's user is
 logged in. A Mac asleep at 04:20 runs the daily job once on waking; a Mac that
 is off or logged out runs nothing, and the weekly scheduled export is then the
 floor. `gh` must be signed in with a token that can dispatch and enable this
-repository's workflows; for a classic token that is the `repo` scope.
+repository's workflows; for a classic token that is the `repo` scope. If `gh`
+keeps that token in the login keychain, a LaunchAgent reaches it only while
+that keychain is unlocked. When `gh` cannot authenticate, the rate-limit check,
+which is each subcommand's first GitHub call, fails, and `status.json` says so.
 
 ## How a pull verifies
 
@@ -178,6 +181,7 @@ synced folder.
 
 ```bash
 export GNUPGHOME=~/ww3-archive/gnupg
+export GPG_TTY="$(tty)"   # the passphrase prompt needs the terminal; stdin is a pipe
 gpg --armor --export-secret-keys 1D9EF06569F94BFEB1C00D8066EFA0B2F44A4CE0 \
   | gpg --symmetric --armor --output /Volumes/<offline medium>/ww3-archive-key.asc.gpg
 ```

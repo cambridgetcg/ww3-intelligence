@@ -324,13 +324,15 @@ keeps the history.
   quietly starting an empty ledger, and saves it back only from a guarded step
   that `ww3-ingest.yml` describes. Its `start_new_ledger` dispatch input is the
   one deliberate way to begin a new ledger.
-- Each run asks USGS for events up to the moment of the request, reads every
-  enabled feed in full rather than sharing one total between them, and asks
-  GDACS for current alerts rather than its default list of past ones. An
-  answer that is not a feed (a challenge page, an error page, an empty
-  document) counts as that feed failing and is named in a warning and in the
-  run's step summary, beside per-feed counts. IAEA items keep the time of day
-  their feed states instead of midnight.
+- Each run asks USGS for up to 1,000 events up to the moment of the request,
+  reads up to 500 entries from each enabled feed (every current feed in full)
+  rather than sharing one total between them, and asks GDACS for the last
+  three days' events at every alert level rather than its default list of
+  past Orange and Red ones. An answer that is not a feed (a challenge page, an
+  error page, a body that does not parse as one) counts as that feed failing,
+  and each failed or empty feed is named in a warning and in the run's step
+  summary, beside per-feed counts. IAEA items keep the time of day their feed
+  states instead of midnight.
 - `.github/workflows/ww3-export.yml` encrypts a copy of the ledger to the
   archive's keys every Monday, and once a day more when the lab Mac asks.
   Scheduled exports also commit `ledger/status.json`, counts and a digest with
@@ -369,12 +371,15 @@ does not invoke Claude or write model-derived Events. It preserves bounded
 source responses, immutable normalized content, captured provenance,
 exact-content dedupe, and owner-only local state where POSIX permissions apply.
 
-CLI source collection is bounded per run. News reads each enabled feed in full,
-up to the adapter's per-feed bound, rather than dividing one total across the
-feeds, so a feed's own window (how many items it serves and how far back they
-reach) is what limits it. Direct RSS adapter calls default to 100 records per
-feed and direct USGS adapter calls to 200. Callers can choose smaller bounded
-limits explicitly.
+CLI source collection is bounded per source. `ingest --limit` bounds the USGS
+query (default 200, at most 1,000), the GDACS list (default and at most 100),
+or each enabled news feed (default 100, at most 500), rather than dividing one
+total across the feeds, so no feed's share depends on another's. The scheduled
+ingest asks for 1,000 USGS events and 500 entries a feed, which reads every
+current feed in full, so a feed's own window (how many items it serves and how
+far back they reach) is what limits it; a feed that reaches its bound says so.
+Direct RSS adapter calls default to 100 records per feed and direct USGS
+adapter calls to 200. Callers can choose smaller bounded limits explicitly.
 
 It does not establish source truth, authenticity, corroboration, independence,
 freshness, completeness, intent, or power. Publication or enactment is not a
