@@ -9,7 +9,7 @@
   events: the old 200 was reached in 78 of 199 logged runs between 2026-10-11
   and 2026-10-31, which cut the oldest part of the seven-day window.
 - Read each source to its own bound. `--limit` now bounds the USGS query
-  (default 200), the GDACS list (100) or each enabled news feed (default 100,
+  (default 200), each GDACS query (100) or each enabled news feed (default 100,
   at most 500). A shared 200 used to be split evenly across the feeds, about 18
   entries each with eleven, so a long feed lost the rest of its items on every
   run while a short feed's share went unused. The scheduled run reads up to 500
@@ -34,20 +34,33 @@
   unchanged and invalid counts to the job summary. Counts and this code's own
   reasons only, no publisher text. A failed or empty row is not evidence that
   nothing was published.
-- Ask GDACS for current events. The adapter sent only `limit`, which GDACS's
-  list does not take, so it received the default list: on 2026-11-08, 82 Orange
-  and Red events whose end dates reached back a year, none of them current. The
-  first scheduled GDACS run captured exactly those 82. They stay in the ledger,
-  which is append-only, as what that query returned that day. The query now
-  asks for every alert level over the last three days, at most 100 events,
-  newest end date first. That day a three-day window filled all 100 places with
-  events whose end date fell in the previous 22 hours, 89 of them Green
-  wildfire alerts, and a second page held 100 more, all Green. So a full page
-  means more matched than were read, the page covers about the newest day
-  rather than three, and an older event is not read whatever its alert level:
-  three Orange drought alerts with an end date inside the window were on
-  neither page. That the window applies to the end date is observed, not
-  documented.
+- Ask GDACS for current events, in two queries. The adapter sent only `limit`,
+  which GDACS's list does not take, so it received the default list: on
+  2026-11-08, 82 Orange and Red events whose end dates reached back a year, none
+  of them current. The first scheduled GDACS run captured exactly those 82. They
+  stay in the ledger, which is append-only, as what that query returned that
+  day. Each run now reads the first page, at most 100 events, newest end date
+  first, of each of two queries:
+  - Every alert level with an end date in the last three days. On 2026-11-08
+    this filled all 100 places with events whose end date fell in the previous
+    22 hours, 89 of them Green wildfire alerts, and a second page held 100 more,
+    all Green; on 2026-11-09 it was again 100 Green events from the previous
+    day. So it covers about the newest day rather than three, and an older
+    event is not read through it whatever its alert level: three Orange drought
+    alerts with an end date inside the window were on neither page.
+  - Orange and Red alerts with an end date in the last 30 days, which reads
+    those. On 2026-11-09 it returned 10 (7 Orange, 3 Red), none of them current,
+    with end dates between 30 and three days back, among them three Orange
+    droughts; no event was on both pages.
+
+  An event both queries return is stored once, and its identity and stored
+  text come from the event alone, so the page it came from cannot by itself
+  file a revision: four Orange and Red events that a third, wider query also
+  returned on 2026-11-09 came back byte for byte the same. A full page
+  means GDACS may hold more matches than were read; the run names each full
+  page, in its output and in the job summary, rather than comparing the merged
+  count to the limit. If either query fails, the GDACS fetch fails for that run.
+  That the window applies to the end date is observed, not documented.
 - Keep the time of day in IAEA's dates. IAEA writes "26-11-06  14:46", with no
   zone; feedparser dropped the time, so every IAEA item was stored at 00:00 UTC
   on its date. The time is now kept, read as UTC as every zoneless time is
@@ -82,8 +95,10 @@
   check in CI that the ingest lock alone covers the ingest path.
 
 **Upgrading:** `ingest news --limit N` meant N records across all feeds; it now
-means up to N from each feed. A `--limit` above a source's own bound (1,000 for
-USGS, 100 for GDACS, 500 for a feed) is refused rather than silently cut.
+means up to N from each feed. `ingest gdacs --limit N` now means up to N from
+each of its two queries, so up to 2N records. A `--limit` above a source's own
+bound (1,000 for USGS, 100 for each GDACS query, 500 for a feed) is refused
+rather than silently cut.
 
 ## 0.1.6 — 2026-11-08
 
