@@ -1,8 +1,24 @@
 # tests/test_ingestion.py
+import re
+import time
+from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlsplit
+
 import pytest
 
-from ingestion.seismic_feed import fetch_seismic_events, parse_usgs_feature
-from ingestion.gdacs_feed import fetch_gdacs_events, parse_gdacs_feature
+from ingestion.http import FetchRefusal
+from ingestion.seismic_feed import fetch_seismic_events, parse_usgs_feature, usgs_query
+from ingestion.gdacs_feed import (
+    ORANGE_RED_QUERY, RECENT_QUERY, GdacsPage, fetch_gdacs_events, fetch_gdacs_pages,
+    gdacs_query, merge_gdacs_pages, parse_gdacs_feature,
+)
+
+
+def _query(request) -> dict:
+    """The query exactly as sent; requests_mock's own ``qs`` lowercases it."""
+    return {
+        key: values[0] for key, values in parse_qs(urlsplit(request.url).query).items()
+    }
 
 
 def test_parse_usgs_feature():
@@ -113,6 +129,38 @@ def test_fetch_seismic_events_is_limited_and_skips_invalid_siblings(requests_moc
     assert requests_mock.request_history[0].qs["limit"] == ["3"]
 
 
+def test_usgs_query_is_a_rolling_window_to_the_second_with_no_end():
+    now = datetime(2026, 11, 8, 20, 30, 15, 900_000, tzinfo=timezone.utc)
+
+    assert usgs_query(min_magnitude=4.0, days=7, limit=1000, now=now) == {
+        "format": "geojson",
+        "starttime": "2026-11-01T20:30:15",
+        "minmagnitude": 4.0,
+        "orderby": "time",
+        "limit": 1000,
+    }
+
+
+def test_fetch_seismic_events_window_includes_events_from_today(requests_mock):
+    requests_mock.get(
+        "https://earthquake.usgs.gov/fdsnws/event/1/query", json={"features": []},
+    )
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+    fetch_seismic_events()
+    after = datetime.now(timezone.utc)
+
+    sent = _query(requests_mock.request_history[0])
+    # No bare date: a time to the second, and no endtime, which FDSN reads as
+    # the present moment.
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", sent["starttime"])
+    assert "endtime" not in sent
+    start = datetime.fromisoformat(sent["starttime"]).replace(tzinfo=timezone.utc)
+    assert before - timedelta(days=7) <= start <= after - timedelta(days=7)
+    midnight = after.replace(hour=0, minute=0, second=0, microsecond=0)
+    for event_time in (midnight + timedelta(seconds=1), after - timedelta(minutes=1)):
+        assert start <= event_time <= after
+
+
 def _gdacs_feature(**property_overrides):
     properties = {
         "eventid": 1000144,
@@ -163,8 +211,233 @@ def test_fetch_gdacs_events_is_bounded_and_skips_malformed_sibling(requests_mock
 
     result = fetch_gdacs_events(limit=2)
 
+    # Both queries got the same answer here, so its one valid event is kept once.
     assert [item["source_record_id"] for item in result] == ["VO:1000144:1"]
-    assert requests_mock.request_history[0].qs["limit"] == ["2"]
+    assert len(requests_mock.request_history) == 2
+    for request in requests_mock.request_history:
+        sent = _query(request)
+        assert sent["pageSize"] == "2"
+        assert "limit" not in sent
+
+
+def test_gdacs_query_asks_for_recent_events_at_every_alert_level():
+    now = datetime(2026, 11, 8, 22, 0, 0, tzinfo=timezone.utc)
+
+    assert gdacs_query(limit=100, now=now) == {
+        "eventlist": "EQ;TC;FL;VO;DR;WF",
+        "alertlevel": "Green;Orange;Red",
+        "fromDate": "2026-11-05T22:00:00",
+        "pageSize": 100,
+    }
+    assert gdacs_query(limit=50, days=1, now=now)["fromDate"] == "2026-11-07T22:00:00"
+    assert gdacs_query(
+        limit=100, days=30, now=now, alert_levels=("Orange", "Red"),
+    ) == {
+        "eventlist": "EQ;TC;FL;VO;DR;WF",
+        "alertlevel": "Orange;Red",
+        "fromDate": "2026-10-09T22:00:00",
+        "pageSize": 100,
+    }
+
+
+def test_fetch_gdacs_events_keeps_its_client_side_bound(requests_mock):
+    from ingestion.gdacs_feed import GDACS_URL
+
+    # GDACS ignored the old ``limit`` parameter; a server that sends more than
+    # was asked for is still cut to the bound here.
+    features = [_gdacs_feature(eventid=index) for index in range(5)]
+    requests_mock.get(GDACS_URL, json={"type": "FeatureCollection", "features": features})
+
+    result = fetch_gdacs_events(limit=3)
+
+    assert [item["source_record_id"] for item in result] == [
+        "VO:0:1", "VO:1:1", "VO:2:1",
+    ]
+    pages = fetch_gdacs_pages(limit=3)
+    assert [(page.served, len(page.records), page.full) for page in pages] == [
+        (5, 3, True), (5, 3, True),
+    ]
+    sent = [_query(request) for request in requests_mock.request_history[:2]]
+    assert [query["alertlevel"] for query in sent] == ["Green;Orange;Red", "Orange;Red"]
+    for query in sent:
+        assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", query["fromDate"])
+        assert "toDate" not in query
+
+
+def _gdacs_answer(*features):
+    return {"type": "FeatureCollection", "features": list(features)}
+
+
+def _gdacs_by_level(requests_mock, *, recent, orange_red):
+    """Answer each query with its own features, told apart by ``alertlevel``."""
+    from ingestion.gdacs_feed import GDACS_URL
+
+    def answer(request, context):
+        if _query(request)["alertlevel"] == "Green;Orange;Red":
+            return _gdacs_answer(*recent)
+        return _gdacs_answer(*orange_red)
+
+    requests_mock.get(GDACS_URL, json=answer)
+
+
+_WILDFIRE = {"eventid": 1033644, "eventtype": "WF", "alertlevel": "Green"}
+_DROUGHT = {"eventid": 1018332, "episodeid": 26, "eventtype": "DR", "alertlevel": "Orange"}
+_CYCLONE = {"eventid": 1001346, "episodeid": 10, "eventtype": "TC", "alertlevel": "Red"}
+
+
+def test_gdacs_asks_every_level_recently_and_orange_red_over_30_days(requests_mock):
+    now = datetime(2026, 11, 9, 0, 0, 46, tzinfo=timezone.utc)
+    _gdacs_by_level(
+        requests_mock,
+        recent=[_gdacs_feature(**_WILDFIRE)],
+        orange_red=[_gdacs_feature(**_DROUGHT)],
+    )
+
+    recent, orange_red = fetch_gdacs_pages(limit=100, now=now)
+
+    # One page each, both windows ending at the same moment: no toDate, no
+    # pageNumber, and no ``limit``, which GDACS ignores.
+    assert [_query(request) for request in requests_mock.request_history] == [
+        {
+            "eventlist": "EQ;TC;FL;VO;DR;WF", "alertlevel": "Green;Orange;Red",
+            "fromDate": "2026-11-06T00:00:46", "pageSize": "100",
+        },
+        {
+            "eventlist": "EQ;TC;FL;VO;DR;WF", "alertlevel": "Orange;Red",
+            "fromDate": "2026-10-10T00:00:46", "pageSize": "100",
+        },
+    ]
+    assert (recent.query, orange_red.query) == (RECENT_QUERY, ORANGE_RED_QUERY)
+    assert [item["source_record_id"] for item in recent.records] == ["WF:1033644:1"]
+    assert [item["source_record_id"] for item in orange_red.records] == ["DR:1018332:26"]
+    assert not recent.full and not orange_red.full
+    assert RECENT_QUERY.describe() == "every alert level, end date in the last 3 days"
+    assert ORANGE_RED_QUERY.describe() == "Orange and Red, end date in the last 30 days"
+
+
+def test_an_event_both_gdacs_queries_return_is_one_record(requests_mock):
+    _gdacs_by_level(
+        requests_mock,
+        recent=[_gdacs_feature(**_WILDFIRE), _gdacs_feature(**_CYCLONE)],
+        orange_red=[_gdacs_feature(**_CYCLONE), _gdacs_feature(**_DROUGHT)],
+    )
+
+    result = fetch_gdacs_events(limit=100)
+
+    assert [item["source_record_id"] for item in result] == [
+        "WF:1033644:1", "TC:1001346:10", "DR:1018332:26",
+    ]
+
+
+def test_merging_gdacs_pages_keeps_the_first_copy_and_tells_episodes_apart():
+    first = parse_gdacs_feature(_gdacs_feature(**_CYCLONE))
+    again = parse_gdacs_feature(_gdacs_feature(**_CYCLONE))
+    next_episode = parse_gdacs_feature(_gdacs_feature(**{**_CYCLONE, "episodeid": 11}))
+    pages = (
+        GdacsPage(RECENT_QUERY, 100, 2, (first, again)),
+        GdacsPage(ORANGE_RED_QUERY, 100, 2, (again, next_episode)),
+    )
+
+    merged = merge_gdacs_pages(pages)
+
+    assert [item["source_record_id"] for item in merged] == [
+        "TC:1001346:10", "TC:1001346:11",
+    ]
+    assert merged[0] is first
+
+
+def test_which_gdacs_query_returned_an_event_files_no_revision(requests_mock):
+    from core.collection import collect_batch
+    from core.db import Observation
+
+    drought = _gdacs_feature(**_DROUGHT)
+    # First run: the drought is on both pages. Second run: it has dropped off
+    # the recent page and only the Orange and Red query returns it.
+    _gdacs_by_level(requests_mock, recent=[drought], orange_red=[drought])
+    recent, orange_red = fetch_gdacs_pages(limit=100)
+    (from_recent,), (from_orange_red,) = recent.records, orange_red.records
+    assert from_recent["source_record_id"] == from_orange_red["source_record_id"]
+    assert from_recent["raw_text"] == from_orange_red["raw_text"]
+    first = collect_batch(merge_gdacs_pages((recent, orange_red)))
+
+    _gdacs_by_level(
+        requests_mock, recent=[_gdacs_feature(**_WILDFIRE)], orange_red=[drought],
+    )
+    second = collect_batch(fetch_gdacs_events(limit=100))
+
+    assert (first.received, first.new, first.known, first.revision) == (1, 1, 0, 0)
+    assert (second.received, second.new, second.known, second.revision) == (2, 1, 1, 0)
+    assert Observation.select().where(Observation.source == "gdacs").count() == 2
+    assert Observation.select().where(Observation.supersedes.is_null(False)).count() == 0
+
+
+def test_a_failed_gdacs_query_fails_the_whole_read(requests_mock):
+    import requests
+    from ingestion.gdacs_feed import GDACS_URL
+
+    def answer(request, context):
+        if _query(request)["alertlevel"] == "Orange;Red":
+            context.status_code = 503
+            return {}
+        return _gdacs_answer(_gdacs_feature(**_WILDFIRE))
+
+    requests_mock.get(GDACS_URL, json=answer)
+
+    with pytest.raises(requests.HTTPError):
+        fetch_gdacs_events(limit=10)
+    assert len(requests_mock.request_history) == 2
+
+
+def _gdacs_no_content_for(requests_mock, levels):
+    """GDACS's answer to a query nothing matches, seen on 2026-11-09: 204, no body."""
+    from ingestion.gdacs_feed import GDACS_URL
+
+    def answer(request, context):
+        if _query(request)["alertlevel"] in levels:
+            context.status_code = 204
+            return b""
+        context.headers["Content-Type"] = "application/json"
+        return json.dumps(_gdacs_answer(_gdacs_feature(**_WILDFIRE))).encode()
+
+    requests_mock.get(GDACS_URL, content=answer)
+
+
+def test_a_gdacs_query_nothing_matches_is_an_empty_page(requests_mock):
+    # A quiet month of Orange and Red alerts must not cost the recent page.
+    _gdacs_no_content_for(requests_mock, {"Orange;Red"})
+
+    recent, orange_red = fetch_gdacs_pages(limit=100)
+
+    assert [item["source_record_id"] for item in recent.records] == ["WF:1033644:1"]
+    assert (orange_red.served, orange_red.records, orange_red.full) == (0, (), False)
+    assert [
+        item["source_record_id"] for item in merge_gdacs_pages((recent, orange_red))
+    ] == ["WF:1033644:1"]
+
+
+def test_gdacs_matching_nothing_on_both_queries_reads_no_records(requests_mock):
+    _gdacs_no_content_for(requests_mock, {"Green;Orange;Red", "Orange;Red"})
+
+    assert fetch_gdacs_events(limit=100) == []
+    assert len(requests_mock.request_history) == 2
+
+
+@pytest.mark.parametrize("status, body", [(200, b""), (204, b"{}")])
+def test_gdacs_answer_without_features_is_still_a_failure(requests_mock, status, body):
+    # Only a 204 with no body means nothing matched; an empty 200 is not that.
+    from ingestion.gdacs_feed import GDACS_URL
+
+    requests_mock.get(GDACS_URL, status_code=status, content=body)
+
+    with pytest.raises(ValueError):
+        fetch_gdacs_events(limit=10)
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+def test_gdacs_refuses_a_page_size_it_cannot_ask_for(requests_mock, limit):
+    with pytest.raises(ValueError):
+        fetch_gdacs_pages(limit=limit)
+    assert requests_mock.request_history == []
 
 
 # News feed tests
@@ -175,6 +448,7 @@ from ingestion.news_feed import (
     fetch_brave_search,
     fetch_rss_feed,
     iter_feed_batches,
+    iter_feed_results,
     parse_rss_entry,
 )
 
@@ -191,6 +465,73 @@ def test_parse_rss_entry():
     assert result["source"] == "reuters"
     assert "Synthetic earthquake report" in result["raw_text"]
     assert result["confidence"] == "not-assessed"
+
+
+def test_parse_rss_entry_keeps_the_stored_text_of_a_dated_entry_unchanged():
+    # The bytes every RSS record has been stored under. Reading IAEA's dates
+    # must not alter them, or every live entry of every other feed would be
+    # filed as a revision on the next run.
+    entry = {
+        "title": "T",
+        "summary": "S",
+        "link": "https://example.test/a",
+        "published": "Mon, 03 Mar 2026 12:00:00 GMT",
+        "published_parsed": time.struct_time((2026, 3, 3, 12, 0, 0, 0, 62, 0)),
+    }
+
+    result = parse_rss_entry(entry, source="bbc_world")
+
+    assert result["raw_text"] == (
+        '{"title": "T", "summary": "S", "link": "https://example.test/a", '
+        '"published": "2026-03-03T12:00:00+00:00"}'
+    )
+    assert result["published_at"] == "2026-03-03T12:00:00+00:00"
+
+
+def test_parse_rss_entry_reads_the_time_in_a_two_digit_year_date():
+    entry = {
+        "title": "Statement",
+        "link": "https://www.iaea.org/newscenter/statements/example",
+        "published": "26-11-06  14:46",
+        # What feedparser makes of it: the date, with the time dropped.
+        "published_parsed": time.struct_time((2026, 11, 6, 0, 0, 0, 4, 310, 0)),
+    }
+
+    result = parse_rss_entry(entry, source="iaea_topnews")
+    raw = json.loads(result["raw_text"])
+
+    # No zone is stated, so none is written; the ledger reads it as UTC.
+    assert result["published_at"] == "2026-11-06T14:46:00"
+    assert raw["published"] == "2026-11-06T14:46:00"
+    assert raw["published_as_served"] == "26-11-06  14:46"
+    from core.observations import parse_timestamp
+    assert parse_timestamp(result["published_at"]) == datetime(2026, 11, 6, 14, 46)
+
+
+@pytest.mark.parametrize("served", ["26-07-15", "26-13-06  14:46", "2026-11-06 14:46"])
+def test_parse_rss_entry_leaves_other_dates_to_feedparser(served):
+    entry = {
+        "title": "Item",
+        "published": served,
+        "published_parsed": time.struct_time((2026, 7, 15, 0, 0, 0, 2, 196, 0)),
+    }
+
+    result = parse_rss_entry(entry, source="iaea_topnews")
+
+    assert result["published_at"] == "2026-07-15T00:00:00+00:00"
+    assert "published_as_served" not in json.loads(result["raw_text"])
+
+
+def test_fetch_rss_feed_reads_iaea_times_from_the_document(requests_mock):
+    url = "https://example.test/topnews"
+    requests_mock.get(url, content=b"""<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>Test</title><item>
+    <title>Synthetic statement</title><link>https://www.iaea.org/statements/1</link>
+    <pubDate>26-11-06  14:46</pubDate></item></channel></rss>""")
+
+    (record,) = fetch_rss_feed(url, "iaea_topnews")
+
+    assert record["published_at"] == "2026-11-06T14:46:00"
 
 
 def test_parse_rss_entry_returns_dict_keys():
@@ -277,6 +618,133 @@ def test_news_batches_apply_per_feed_and_total_limits():
         ("one", 2), ("two", 2), ("three", 1),
     ]
     assert [call.kwargs["limit"] for call in fetch.call_args_list] == [2, 2, 1]
+
+
+def test_fetch_rss_feed_refuses_an_html_page_served_as_success(requests_mock):
+    url = "https://example.test/rss/"
+    page = b"<html><head><title>Request Rejected</title></head><body>No.</body></html>"
+    requests_mock.get(url, content=page, headers={"Content-Type": "text/html"})
+
+    with pytest.raises(FetchRefusal) as refused:
+        fetch_rss_feed(url, "test-feed")
+
+    assert refused.value.reason == f"not a feed: text/html, {len(page)} bytes"
+    assert "Rejected" not in refused.value.reason
+
+
+@pytest.mark.parametrize("content_type", [
+    "application/rss+xml; charset=utf-8", "text/xml", "application/xml", None,
+])
+def test_fetch_rss_feed_returns_nothing_for_a_well_formed_empty_feed(
+    requests_mock, content_type,
+):
+    url = "https://example.test/empty.xml"
+    headers = {"Content-Type": content_type} if content_type else {}
+    requests_mock.get(url, headers=headers, content=b"""<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>Quiet</title>
+    <link>https://example.test/</link><description>d</description></channel></rss>""")
+
+    assert fetch_rss_feed(url, "test-feed") == []
+
+
+@pytest.mark.parametrize("content, content_type, reason", [
+    (b"", None, "not a feed: no declared type, {size} bytes"),
+    (b"<rss version='2.0'><channel><title>T", "text/xml",
+     "not a feed: text/xml, {size} bytes, unparsable"),
+    (b'{"items": []}', "application/json", "not a feed: application/json, {size} bytes"),
+    (b"<rss version='2.0'><channel/></rss>", "text/plain",
+     "not a feed: text/plain, {size} bytes"),
+])
+def test_fetch_rss_feed_refuses_answers_with_no_entries_that_are_not_feeds(
+    requests_mock, content, content_type, reason,
+):
+    url = "https://example.test/odd"
+    headers = {"Content-Type": content_type} if content_type else {}
+    requests_mock.get(url, content=content, headers=headers)
+
+    with pytest.raises(FetchRefusal) as refused:
+        fetch_rss_feed(url, "test-feed")
+
+    assert refused.value.reason == reason.format(size=len(content))
+
+
+def test_fetch_rss_feed_reads_entries_whatever_the_declared_type(requests_mock):
+    url = "https://example.test/mislabelled"
+    requests_mock.get(url, headers={"Content-Type": "text/html"}, content=b"""<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>T</title><item><title>Kept</title>
+    <link>https://example.test/kept</link></item></channel></rss>""")
+
+    assert [r["canonical_url"] for r in fetch_rss_feed(url, "test-feed")] == [
+        "https://example.test/kept",
+    ]
+
+
+def test_fetch_rss_feed_refuses_a_feed_whose_every_entry_is_unusable(requests_mock):
+    url = "https://example.test/broken-entries.xml"
+    requests_mock.get(url, content=b"<rss/>")
+    parsed_feed = MagicMock(entries=[{"bad": True}, {"bad": True}])
+
+    with patch("ingestion.news_feed.feedparser.parse", return_value=parsed_feed), \
+         patch("ingestion.news_feed.parse_rss_entry", side_effect=ValueError("x")):
+        with pytest.raises(FetchRefusal) as refused:
+            fetch_rss_feed(url, "feed")
+
+    assert refused.value.reason == "2 entries, none usable"
+
+
+def test_feed_results_classify_each_feed_with_a_short_reason(requests_mock):
+    feeds = {
+        "fine": "https://example.test/fine.xml",
+        "quiet": "https://example.test/quiet.xml",
+        "moved": "https://example.test/moved.xml",
+        "down": "https://example.test/down.xml",
+        "blocked": "https://example.test/blocked",
+    }
+    requests_mock.get(feeds["fine"], content=b"""<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>T</title><item><title>One</title>
+    <link>https://example.test/1</link></item></channel></rss>""")
+    requests_mock.get(feeds["quiet"], content=b"""<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>T</title></channel></rss>""")
+    requests_mock.get(
+        feeds["moved"], status_code=301, headers={"Location": "https://example.test/new"},
+    )
+    requests_mock.get(feeds["down"], status_code=503, text="private body")
+    requests_mock.get(
+        feeds["blocked"], content=b"<html>x</html>", headers={"Content-Type": "text/html"},
+    )
+
+    with patch("ingestion.news_feed.RSS_FEEDS", feeds):
+        results = list(iter_feed_results(limit_per_feed=10))
+
+    assert [(r.source, r.status, len(r.records), r.reason, r.limit) for r in results] == [
+        ("fine", "ok", 1, None, 10),
+        ("quiet", "empty", 0, None, 10),
+        ("moved", "failed", 0, "HTTP 301 redirect refused", 10),
+        ("down", "failed", 0, "HTTP 503", 10),
+        ("blocked", "failed", 0, "not a feed: text/html, 14 bytes", 10),
+    ]
+    assert len(requests_mock.request_history) == 5
+
+
+def test_news_batches_pass_a_short_feeds_unused_share_on():
+    feeds = {
+        "short": "https://example.test/short.xml",
+        "long": "https://example.test/long.xml",
+        "last": "https://example.test/last.xml",
+    }
+    available = {"short": 0, "long": 9, "last": 9}
+
+    def records(url, source, *, limit):
+        return [{"source": source}] * min(limit, available[source])
+
+    with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
+         patch("ingestion.news_feed.fetch_rss_feed", side_effect=records) as fetch:
+        batches = list(iter_feed_batches(limit_per_feed=4, total_limit=6))
+
+    assert [call.kwargs["limit"] for call in fetch.call_args_list] == [2, 3, 3]
+    assert [(source, len(batch)) for source, batch in batches] == [
+        ("short", 0), ("long", 3), ("last", 3),
+    ]
 
 
 def test_rss_invalid_entry_does_not_discard_valid_sibling(requests_mock, capsys):

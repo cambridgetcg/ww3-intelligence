@@ -1,0 +1,18 @@
+# What `ww3.py ingest usgs|news|gdacs` imports, and nothing else. The
+# scheduled ingest installs requirements-ingest.lock, which pins these and
+# their dependencies with hashes, for Python 3.11 on x86_64 Linux.
+#
+# Regenerate the lock after changing this file (an existing lock keeps its
+# pins unless a package is upgraded on purpose):
+#   uv pip compile --generate-hashes --python-version 3.11 \
+#     --python-platform x86_64-unknown-linux-gnu \
+#     requirements-ingest.in -o requirements-ingest.lock
+#
+# An RSS record's stored text is built from feedparser's output, so a
+# feedparser release that sanitizes or dates entries differently files every
+# live entry as a revision. Upgrade it deliberately, not as a side effect.
+click>=8.1,<9
+peewee>=3.17,<5
+requests>=2.31,<3
+feedparser>=6.0.11,<7
+python-dotenv>=1,<2

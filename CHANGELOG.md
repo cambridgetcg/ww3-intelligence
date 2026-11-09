@@ -1,5 +1,109 @@
 # Changelog
 
+## 0.1.7 — 2026-11-08
+
+- Read USGS up to the present moment. The query sent whole dates, so its window
+  ended at 00:00 UTC today and nothing from the current UTC day could be read
+  until the first run after the next midnight; on 2026-11-08 the ledger held
+  none of that day's ten M4+ events. The scheduled run now asks for up to 1,000
+  events: the old 200 was reached in 78 of 199 logged runs between 2026-10-11
+  and 2026-10-31, which cut the oldest part of the seven-day window.
+- Read each source to its own bound. `--limit` now bounds the USGS query
+  (default 200), each GDACS query (100) or each enabled news feed (default 100,
+  at most 500). A shared 200 used to be split evenly across the feeds, about 18
+  entries each with eleven, so a long feed lost the rest of its items on every
+  run while a short feed's share went unused. The scheduled run reads up to 500
+  from each feed, which reads every current feed in full. Entries never fetched
+  before are captured once, as first-seen: they are records first seen late,
+  not new publications. The watcher's total of 200 a cycle now passes a short
+  feed's unused share on to the feeds after it.
+- Count an answer that is not a feed as a failed fetch. Each feed is `ok` (at
+  least one record), `empty` (a well-formed feed with no items) or `failed`,
+  with a short reason: a network or HTTP error, a refused redirect, a body that
+  is not a feed, or entries none of which could be used. The Russian ministry's
+  address answered each of four requests on 2026-11-08 with a 301-byte "Request
+  Rejected" page served as 200 text/html, and run totals suggest it did so in
+  most runs, each reported as a success. Failed feeds now count against "fetches
+  succeeded"; the command still exits 1 only when every feed fails. The 0.1.6
+  line for feeds that answered with no records names only well-formed empty
+  feeds; failed ones get their own line. A failed USGS or GDACS fetch is a
+  one-line error instead of a traceback. A reason is built from a status, a
+  media type and a byte count, never from the body.
+- Under GitHub Actions, warn for each failed or empty feed and for a failed
+  USGS or GDACS fetch, and write each source's received, first-seen, revision,
+  unchanged and invalid counts to the job summary. Counts and this code's own
+  reasons only, no publisher text. A failed or empty row is not evidence that
+  nothing was published.
+- Ask GDACS for current events, in two queries. The adapter sent only `limit`,
+  which GDACS's list does not take, so it received the default list: on
+  2026-11-08, 82 Orange and Red events whose end dates reached back a year, none
+  of them current. The first scheduled GDACS run captured exactly those 82. They
+  stay in the ledger, which is append-only, as what that query returned that
+  day. Each run now reads the first page, at most 100 events, newest end date
+  first, of each of two queries:
+  - Every alert level with an end date in the last three days. On 2026-11-08
+    this filled all 100 places with events whose end date fell in the previous
+    22 hours, 89 of them Green wildfire alerts, and a second page held 100 more,
+    all Green; on 2026-11-09 it was again 100 Green events from the previous
+    day. So it covers about the newest day rather than three, and an older
+    event is not read through it whatever its alert level: three Orange drought
+    alerts with an end date inside the window were on neither page.
+  - Orange and Red alerts with an end date in the last 30 days, which reads
+    those. On 2026-11-09 it returned 10 (7 Orange, 3 Red), none of them current,
+    with end dates between 30 and three days back, among them three Orange
+    droughts; no event was on both pages.
+
+  An event both queries return is stored once, and its identity and stored
+  text come from the event alone, so the page it came from cannot by itself
+  file a revision: four Orange and Red events that a third, wider query also
+  returned on 2026-11-09 came back byte for byte the same. A full page
+  means GDACS may hold more matches than were read; the run names each full
+  page, in its output and in the job summary, rather than comparing the merged
+  count to the limit. If either query fails, the GDACS fetch fails for that run.
+  A query nothing matches is not a failure: GDACS answers it with 204 and no
+  body, as it did on 2026-11-09 for Orange and Red over one day, so it is read
+  as an empty page and a quiet month of Orange and Red alerts does not cost
+  the recent page. That the window applies to the end date is observed, not
+  documented.
+- Keep the time of day in IAEA's dates. IAEA writes "26-11-06  14:46", with no
+  zone; feedparser dropped the time, so every IAEA item was stored at 00:00 UTC
+  on its date. The time is now kept, read as UTC as every zoneless time is
+  here, and written without an offset, beside the publisher's own string
+  (`published_as_served`). If IAEA means Vienna time, the stored times are one
+  or two hours late. Each IAEA item still in its feed is filed once as a
+  revision (15 on 2026-11-08). No other feed's stored text changed in a replay
+  of every entry the nine other answering feeds served that day: each was
+  captured with the previous code, then again with this release, and every one
+  was known unchanged. The Russian ministry's feed was blocked, so none of its
+  entries could be replayed.
+- Keep the scheduled ingest's ledger (`ww3-ingest.yml`):
+  - A cache miss fails the run before anything is collected. Until now a miss
+    would have started an empty ledger and saved it as the newest entry, and
+    every later run and export would have built on that while the real one aged
+    out. A manual run with `start_new_ledger` is the deliberate way to begin
+    one; it only permits a miss. A restore that fails for any other reason
+    looks the same as a miss, so tick it only when the repository's cache list
+    holds no `ww3-db-` entry.
+  - The ledger is checked before it is saved: SQLite's integrity check, and an
+    observation count and highest id no lower than what was restored. One that
+    fails is not saved.
+  - Every source runs whatever the others did, and a checked ledger is saved
+    even when one failed. The run then fails if USGS or the news feeds failed;
+    GDACS may fail alone and leaves a warning.
+  - The job holds a read-only token. The event-stream commit step is gone: the
+    file is gitignored, so it never committed anything. The job installs
+    `requirements-ingest.lock`, exactly what ingest imports, pinned with hashes
+    at the versions production resolved on 2026-11-08, so installing them
+    changes no content hash.
+- Test on Python 3.11, which the scheduled ingest runs, as well as 3.14, and
+  check in CI that the ingest lock alone covers the ingest path.
+
+**Upgrading:** `ingest news --limit N` meant N records across all feeds; it now
+means up to N from each feed. `ingest gdacs --limit N` now means up to N from
+each of its two queries, so up to 2N records. A `--limit` above a source's own
+bound (1,000 for USGS, 100 for each GDACS query, 500 for a feed) is refused
+rather than silently cut.
+
 ## 0.1.6 — 2026-11-08
 
 - `ingest news` prints one line per feed that answered (records received and,

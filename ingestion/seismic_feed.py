@@ -11,6 +11,32 @@ MAX_USGS_EVENTS = 1_000
 DEFAULT_USGS_EVENTS = 200
 
 
+def usgs_query(
+    *,
+    min_magnitude: float,
+    days: int,
+    limit: int,
+    now: datetime | None = None,
+) -> dict:
+    """The FDSN query: the last ``days`` days to the second, newest first.
+
+    The window used to be whole dates, ending at 00:00 UTC today, so nothing
+    from the current UTC day could be read until the first run after the next
+    midnight. ``starttime`` is now a full UTC timestamp (FDSN reads a time
+    without a zone as UTC) and ``endtime`` is left out, which FDSN takes as
+    the present moment.
+    """
+    now = now or datetime.now(timezone.utc)
+    start = now.astimezone(timezone.utc) - timedelta(days=days)
+    return {
+        "format": "geojson",
+        "starttime": start.strftime("%Y-%m-%dT%H:%M:%S"),
+        "minmagnitude": min_magnitude,
+        "orderby": "time",
+        "limit": limit,
+    }
+
+
 def fetch_seismic_events(
     min_magnitude: float = 4.0,
     days: int = 7,
@@ -18,16 +44,7 @@ def fetch_seismic_events(
 ) -> list:
     if not 1 <= limit <= MAX_USGS_EVENTS:
         raise ValueError(f"USGS event limit must be between 1 and {MAX_USGS_EVENTS}")
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days)
-    params = {
-        "format": "geojson",
-        "starttime": start.strftime("%Y-%m-%d"),
-        "endtime": end.strftime("%Y-%m-%d"),
-        "minmagnitude": min_magnitude,
-        "orderby": "time",
-        "limit": limit,
-    }
+    params = usgs_query(min_magnitude=min_magnitude, days=days, limit=limit)
     content = fetch_limited(
         USGS_URL,
         request_get=requests.get,

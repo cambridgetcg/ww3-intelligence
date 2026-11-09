@@ -171,24 +171,128 @@ def test_cli_ingest_dry_run_does_not_initialize_database():
     init.assert_not_called()
 
 
-def test_cli_ingest_gdacs_collects_bounded_hazard_observation():
-    from core.db import AnalysisRun, Event, Observation
-
-    leaf = {
+def _gdacs_leaf(source_record_id):
+    return {
         "source": "gdacs",
-        "source_record_id": "VO:1:1",
+        "source_record_id": source_record_id,
         "type": "hazard",
         "raw_text": json.dumps({"title": "Source alert", "alert_level": "Orange"}),
     }
-    with patch("ingestion.gdacs_feed.fetch_gdacs_events", return_value=[leaf]) as fetch:
+
+
+def _gdacs_pages(*, limit=100, recent=(), orange_red=(), served=None):
+    """Two pages; ``served`` is each page's count before parsing, if not its records."""
+    from ingestion.gdacs_feed import ORANGE_RED_QUERY, RECENT_QUERY, GdacsPage
+
+    recent_served, orange_red_served = served or (len(recent), len(orange_red))
+    return (
+        GdacsPage(RECENT_QUERY, limit, recent_served, tuple(recent)),
+        GdacsPage(ORANGE_RED_QUERY, limit, orange_red_served, tuple(orange_red)),
+    )
+
+
+def test_cli_ingest_gdacs_collects_bounded_hazard_observation():
+    from core.db import AnalysisRun, Event, Observation
+
+    leaf = _gdacs_leaf("VO:1:1")
+    pages = _gdacs_pages(recent=[leaf], orange_red=[leaf])
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages", return_value=pages) as fetch:
         result = CliRunner().invoke(cli, ["ingest", "gdacs"])
 
     assert result.exit_code == 0, result.output
     fetch.assert_called_once_with(limit=100)
+    assert (
+        "Fetching up to 100 GDACS hazard records from each of 2 queries "
+        "(at most 200, each event once)..." in result.output
+    )
+    assert (
+        "  recent (every alert level, end date in the last 3 days): 1 read." in result.output
+    )
+    assert (
+        "  orange-red (Orange and Red, end date in the last 30 days): 1 read."
+        in result.output
+    )
+    assert "  1 distinct record(s); 1 returned more than once, kept once." in result.output
+    # The event both queries returned is one observation, captured once.
     assert Observation.select().count() == 1
+    assert "Received 1 source record(s)." in result.output
+    assert "Known unchanged: 0. Invalid: 0." in result.output
     assert AnalysisRun.select().count() == 0
     assert Event.select().count() == 0
     assert "No model analysis was requested" in result.output
+
+
+def test_cli_gdacs_reports_a_full_page_not_a_full_merged_count(tmp_path, monkeypatch):
+    summary = tmp_path / "step-summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    leaves = [_gdacs_leaf(f"WF:{index}:1") for index in range(5)]
+
+    # The recent page is full; the merged five records are no page's count.
+    full = _gdacs_pages(limit=3, recent=leaves[:3], orange_red=leaves[3:])
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages", return_value=full):
+        at_limit = CliRunner().invoke(cli, ["ingest", "gdacs", "--limit", "3", "--dry-run"])
+    # Neither page is full, although the merged four records exceed the limit.
+    short = _gdacs_pages(limit=3, recent=leaves[:2], orange_red=leaves[2:4])
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages", return_value=short):
+        below = CliRunner().invoke(cli, ["ingest", "gdacs", "--limit", "3", "--dry-run"])
+
+    assert at_limit.exit_code == 0, at_limit.output
+    assert (
+        "  recent (every alert level, end date in the last 3 days): 3 read, a full "
+        "page of 3; GDACS may hold more matches than were read." in at_limit.output
+    )
+    assert "orange-red (Orange and Red, end date in the last 30 days): 2 read." in (
+        at_limit.output
+    )
+    assert below.exit_code == 0, below.output
+    assert "full page" not in below.output
+    assert "may hold more" not in below.output
+    table = summary.read_text(encoding="utf-8")
+    assert "| gdacs | ok, recent page at the limit of 3 | 5 | – | – | – | – |" in table
+    assert "| gdacs | ok | 4 | – | – | – | – |" in table
+
+
+def test_cli_gdacs_query_that_matches_nothing_does_not_fail_the_run(
+    requests_mock, tmp_path, monkeypatch,
+):
+    from ingestion.gdacs_feed import GDACS_URL
+
+    summary = tmp_path / "step-summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    leaf = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [1.0, 2.0]},
+        "properties": {"eventid": 7, "episodeid": 1, "eventtype": "WF"},
+    }
+
+    def answer(request, context):
+        # GDACS answers a query nothing matches with 204 and no body. (``qs``
+        # is lowercased by requests_mock.)
+        if request.qs["alertlevel"] == ["orange;red"]:
+            context.status_code = 204
+            return b""
+        return json.dumps({"type": "FeatureCollection", "features": [leaf]}).encode()
+
+    requests_mock.get(GDACS_URL, content=answer)
+    result = CliRunner().invoke(cli, ["ingest", "gdacs", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert len(requests_mock.request_history) == 2
+    assert (
+        "  recent (every alert level, end date in the last 3 days): 1 read." in result.output
+    )
+    assert (
+        "  orange-red (Orange and Red, end date in the last 30 days): 0 read; GDACS "
+        "listed none (not evidence that nothing happened)." in result.output
+    )
+    assert "Fetched 1 source record(s)." in result.output
+    assert "| gdacs | ok | 1 | – | – | – | – |" in summary.read_text(encoding="utf-8")
+
+
+def _fetched(source, status, records=(), *, reason=None, limit=100):
+    from ingestion.http import FetchResult
+
+    return FetchResult(source, status, list(records), reason=reason, limit=limit)
 
 
 def test_cli_news_ingest_reports_partial_and_total_source_failure():
@@ -204,22 +308,39 @@ def test_cli_news_ingest_reports_partial_and_total_source_failure():
     }
     with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
          patch(
-             "ingestion.news_feed.iter_feed_batches",
-             return_value=iter([("one", [leaf])]),
-         ):
+             "ingestion.news_feed.iter_feed_results",
+             return_value=iter([
+                 _fetched("one", "ok", [leaf], limit=2),
+                 _fetched("two", "failed", reason="ReadTimeout", limit=2),
+             ]),
+         ) as results:
         partial = CliRunner().invoke(cli, ["ingest", "news", "--limit", "2"])
 
     assert partial.exit_code == 0, partial.output
+    results.assert_called_once_with(limit_per_feed=2)
     assert "News feed fetches succeeded: 1/2" in partial.output
-    assert "  one: 1 received, 1 captured." in partial.output
+    assert (
+        "  one: ok, 1 received, 1 captured (1 first-seen, 0 revision(s))."
+        in partial.output
+    )
+    assert "  two: failed (ReadTimeout)." in partial.output
+    assert "Could not be read" in partial.output
+    assert "two." in partial.output.split("Could not be read", 1)[1]
     assert "Answered with no records" not in partial.output
     assert Observation.select().count() == 1
 
     with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
-         patch("ingestion.news_feed.iter_feed_batches", return_value=iter([])):
+         patch(
+             "ingestion.news_feed.iter_feed_results",
+             return_value=iter([
+                 _fetched("one", "failed", reason="HTTP 503", limit=2),
+                 _fetched("two", "failed", reason="ConnectionError", limit=2),
+             ]),
+         ):
         failed = CliRunner().invoke(cli, ["ingest", "news", "--limit", "2"])
 
     assert failed.exit_code == 1
+    assert "News feed fetches succeeded: 0/2" in failed.output
     assert "All configured news feed fetches failed" in failed.output
 
 
@@ -234,8 +355,11 @@ def test_cli_news_ingest_names_a_feed_that_answers_with_no_records():
     }
     with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
          patch(
-             "ingestion.news_feed.iter_feed_batches",
-             return_value=iter([("one", [leaf]), ("two", [])]),
+             "ingestion.news_feed.iter_feed_results",
+             return_value=iter([
+                 _fetched("one", "ok", [leaf], limit=2),
+                 _fetched("two", "empty", limit=2),
+             ]),
          ):
         result = CliRunner().invoke(
             cli, ["ingest", "news", "--limit", "2", "--dry-run"]
@@ -243,11 +367,210 @@ def test_cli_news_ingest_names_a_feed_that_answers_with_no_records():
 
     assert result.exit_code == 0, result.output
     assert "News feed fetches succeeded: 2/2" in result.output
-    assert "  one: 1 received." in result.output
-    assert "  two: 0 received." in result.output
+    assert "  one: ok, 1 received." in result.output
+    assert "  two: empty, 0 received." in result.output
+    assert "Could not be read" not in result.output
     assert "Answered with no records" in result.output
     assert result.output.rstrip().endswith("occurred.")
     assert "two." in result.output.split("Answered with no records", 1)[1]
+    assert "::warning" not in result.output
+
+
+# About 300 bytes of HTML served with status 200, the shape a firewall's block
+# page takes. The wording is written for this test, not copied from anyone.
+_BLOCK_PAGE = (
+    b"<html><head><title>Request Rejected</title></head><body>"
+    b"<p>This request was rejected by a synthetic test firewall.</p>"
+    b"<p>Reference: 0000000000000000000</p>"
+    b"<p>Nothing on this page is a feed, and nothing here is a publisher's text."
+    b"</p><p><a href=\"/\">Back</a></p></body></html>"
+)
+
+_SMALL_RSS = b"""<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Test</title><link>https://example.test/</link>
+<description>Synthetic</description><item><title>Synthetic item</title>
+<link>https://example.test/item/1</link><description>One.</description></item>
+</channel></rss>"""
+
+
+def test_cli_news_ingest_counts_a_block_page_as_a_failed_fetch(requests_mock):
+    blocked = "https://blocked.example.test/rss/"
+    working = "https://working.example.test/rss.xml"
+    requests_mock.get(
+        blocked, content=_BLOCK_PAGE,
+        headers={"Content-Type": "text/html; charset=utf-8"},
+    )
+    requests_mock.get(
+        working, content=_SMALL_RSS,
+        headers={"Content-Type": "application/rss+xml; charset=utf-8"},
+    )
+    feeds = {"blocked_feed": blocked, "working_feed": working}
+
+    with patch("ingestion.news_feed.RSS_FEEDS", feeds):
+        result = CliRunner().invoke(cli, ["ingest", "news", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "News feed fetches succeeded: 1/2." in result.output
+    assert (
+        f"  blocked_feed: failed (not a feed: text/html, {len(_BLOCK_PAGE)} bytes)."
+        in result.output
+    )
+    assert "  working_feed: ok, 1 received." in result.output
+    assert "Request Rejected" not in result.output
+    assert "firewall" not in result.output
+    assert [request.timeout for request in requests_mock.request_history] == [
+        (3.05, 15), (3.05, 15),
+    ]
+
+
+def test_cli_news_ingest_reads_each_feed_to_its_own_bound():
+    feeds = {
+        "one": "https://example.test/one.xml",
+        "two": "https://example.test/two.xml",
+    }
+    with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
+         patch(
+             "ingestion.news_feed.iter_feed_results",
+             return_value=iter([_fetched("one", "ok", [{}] * 100), _fetched("two", "empty")]),
+         ) as results:
+        default = CliRunner().invoke(cli, ["ingest", "news", "--dry-run"])
+
+    assert default.exit_code == 0, default.output
+    results.assert_called_once_with(limit_per_feed=100)
+    assert "up to 100 records from each of 2 enabled news feeds (at most 200)" in (
+        default.output
+    )
+    assert "  one: ok, 100 received (the limit of 100; the feed may hold more)." in (
+        default.output
+    )
+
+    with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
+         patch("ingestion.news_feed.iter_feed_results", return_value=iter([])) as results:
+        deepest = CliRunner().invoke(cli, ["ingest", "news", "--limit", "500", "--dry-run"])
+    results.assert_called_once_with(limit_per_feed=500)
+    assert "up to 500 records from each of 2" in deepest.output
+
+    with patch("ingestion.news_feed.iter_feed_results") as results:
+        refused = CliRunner().invoke(cli, ["ingest", "news", "--limit", "501", "--dry-run"])
+    assert refused.exit_code == 2
+    assert "news reads at most 500 records from each feed" in refused.output
+    results.assert_not_called()
+
+
+def test_cli_ingest_refuses_a_gdacs_limit_above_one_page():
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages") as fetch:
+        result = CliRunner().invoke(cli, ["ingest", "gdacs", "--limit", "101", "--dry-run"])
+
+    assert result.exit_code == 2
+    assert "gdacs reads at most 100 records from each query" in result.output
+    fetch.assert_not_called()
+
+
+def test_cli_ingest_usgs_passes_its_limit_and_notes_a_full_answer():
+    leaves = [
+        {"source": "usgs", "source_record_id": f"q{index}", "type": "seismic",
+         "raw_text": "{}"}
+        for index in range(3)
+    ]
+    with patch("ingestion.seismic_feed.fetch_seismic_events", return_value=leaves) as fetch:
+        result = CliRunner().invoke(cli, ["ingest", "usgs", "--limit", "3", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    fetch.assert_called_once_with(limit=3)
+    assert "Reached the limit of 3; usgs may hold more than was read." in result.output
+
+
+def test_cli_news_ingest_annotates_actions_and_writes_a_counts_only_summary(
+    tmp_path, monkeypatch,
+):
+    summary = tmp_path / "step-summary.md"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    feeds = {
+        "one": "https://example.test/one.xml",
+        "two": "https://example.test/two.xml",
+        "three": "https://example.test/three.xml",
+    }
+    leaf = {
+        "source": "one", "source_record_id": "story-1", "type": "news",
+        "raw_text": json.dumps({"title": "Publisher headline text"}),
+    }
+    with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
+         patch(
+             "ingestion.news_feed.iter_feed_results",
+             return_value=iter([
+                 _fetched("one", "ok", [leaf]),
+                 _fetched("two", "empty"),
+                 _fetched("three", "failed", reason="not a feed: text/html, 301 bytes"),
+             ]),
+         ):
+        result = CliRunner().invoke(cli, ["ingest", "news"])
+
+    assert result.exit_code == 0, result.output
+    warnings = [line for line in result.output.splitlines() if line.startswith("::")]
+    assert warnings == [
+        "::warning title=News feed empty (two)::A well-formed feed with no items. "
+        "Not evidence that nothing was published.",
+        "::warning title=News feed failed (three)::not a feed: text/html, 301 bytes. "
+        "Nothing was read from this feed in this run.",
+    ]
+    table = summary.read_text(encoding="utf-8")
+    assert table.startswith("### ingest news\n")
+    assert (
+        "| source | status | received | first-seen | revisions | unchanged | invalid |"
+        in table
+    )
+    assert "| one | ok | 1 | 1 | 0 | 0 | 0 |" in table
+    assert "| two | empty | 0 | 0 | 0 | 0 | 0 |" in table
+    assert "| three | failed (not a feed: text/html, 301 bytes) | – | – | – | – | – |" in table
+    assert "Publisher headline text" not in table
+    assert "Publisher headline text" not in result.output
+
+
+def test_cli_ingest_failed_usgs_or_gdacs_fetch_warns_and_exits_nonzero(
+    tmp_path, monkeypatch,
+):
+    import requests
+
+    summary = tmp_path / "step-summary.md"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    failure = requests.ConnectionError("private detail https://example.test/?q=1")
+
+    with patch("ingestion.seismic_feed.fetch_seismic_events", side_effect=failure):
+        usgs = CliRunner().invoke(cli, ["ingest", "usgs"])
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages", side_effect=failure):
+        gdacs = CliRunner().invoke(cli, ["ingest", "gdacs"])
+
+    assert usgs.exit_code == 1
+    assert (
+        "::warning title=USGS fetch failed::ConnectionError. "
+        "No USGS records were read in this run." in usgs.output
+    )
+    assert "The usgs fetch failed (ConnectionError); no records were returned." in (
+        usgs.output
+    )
+    assert gdacs.exit_code == 1
+    assert "::warning title=GDACS fetch failed::ConnectionError." in gdacs.output
+    for output in (usgs.output, gdacs.output):
+        assert "private detail" not in output
+        assert "example.test" not in output
+    table = summary.read_text(encoding="utf-8")
+    assert "### ingest usgs" in table and "### ingest gdacs" in table
+    assert "| usgs | failed (ConnectionError) | – | – | – | – | – |" in table
+    assert "| gdacs | failed (ConnectionError) | – | – | – | – | – |" in table
+    assert "private detail" not in table
+
+
+def test_cli_ingest_outside_actions_neither_annotates_nor_writes_a_summary(tmp_path):
+    assert "GITHUB_ACTIONS" not in os.environ
+    assert "GITHUB_STEP_SUMMARY" not in os.environ
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages", side_effect=OSError("x")):
+        result = CliRunner().invoke(cli, ["ingest", "gdacs", "--dry-run"])
+
+    assert result.exit_code == 1
+    assert "::warning" not in result.output
+    assert "The gdacs fetch failed (OSError)" in result.output
 
 
 def test_cli_ingest_dry_run_creates_no_database_in_fresh_process(tmp_path):

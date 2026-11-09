@@ -9,7 +9,6 @@ from cli.rendering import terminal_line, terminal_text
 from core.db import init_db, Event, Observation, Prediction
 
 
-DEFAULT_INGEST_LIMIT = 200
 MAX_INGEST_LIMIT = 1_000
 MAX_CAPTURE_INPUT_BYTES = 16 * 1024 * 1024
 MAX_CAPTURE_RECORDS = 1_000
@@ -311,12 +310,50 @@ def _make_slug(title: str) -> str:
     return slug
 
 
+def _feed_line(row) -> str:
+    """One feed's line: its status, what it gave, and what capture made of it."""
+    line = f"  {row.source}: {row.status}"
+    if row.received is None:
+        return line + (f" ({row.reason})." if row.reason else ".")
+    line += f", {row.received} received"
+    if row.at_limit:
+        line += f" (the limit of {row.limit}; the feed may hold more)"
+    if row.captured is not None:
+        line += (
+            f", {row.captured} captured ({row.new} first-seen, "
+            f"{row.revision} revision(s))"
+        )
+    return line + "."
+
+
+def _gdacs_page_line(page) -> str:
+    """One GDACS query's line: what it asks for, what it read, if it was full."""
+    line = f"  {page.query.name} ({page.query.describe()}): {len(page.records)} read"
+    if page.served == 0:
+        line += "; GDACS listed none (not evidence that nothing happened)"
+    elif page.full:
+        line += (
+            f", a full page of {page.limit}; GDACS may hold more matches than "
+            "were read"
+        )
+    return line + "."
+
+
 @cli.command("ingest")
 @click.argument("source", type=click.Choice(["usgs", "gdacs", "news"]))
 @click.option(
-    "--limit", default=DEFAULT_INGEST_LIMIT, show_default=True,
-    type=click.IntRange(1, MAX_INGEST_LIMIT),
-    help="Maximum source records returned across this fetch.",
+    "--limit", default=None, type=click.IntRange(1, MAX_INGEST_LIMIT),
+    help=(
+        "Most records read from each source: the USGS query (default 200, at "
+        "most 1000), each of the two GDACS queries (default and at most 100, "
+        "one page each: every alert level with an end date in the last 3 "
+        "days, and Orange and Red in the last 30; a GDACS run reads at most "
+        "twice LIMIT, an event both return is kept once, and a full page "
+        "means GDACS may hold more matches than were read), or each enabled "
+        "news feed (default 100, at most 500), so a news run reads at most "
+        "LIMIT times the number of enabled feeds and no feed's share depends "
+        "on another's."
+    ),
 )
 @click.option(
     "--analyze", is_flag=True,
@@ -327,44 +364,90 @@ def _make_slug(title: str) -> str:
     help="Fetch and count only; do not open or modify the database.",
 )
 def ingest(source, limit, analyze, dry_run):
-    """Fetch a bounded source batch and capture immutable observations."""
-    from core.collection import collect_batch
-    from ingestion.seismic_feed import fetch_seismic_events
-    from ingestion.gdacs_feed import MAX_GDACS_EVENTS, fetch_gdacs_events
-    from ingestion.news_feed import MAX_FEED_ENTRIES, RSS_FEEDS, iter_feed_batches
+    """Fetch bounded source records and capture immutable observations."""
+    from dataclasses import replace
 
-    def source_batches():
+    from cli.run_report import SourceRow, report_to_actions
+    from core.collection import collect_batch
+    from ingestion.http import FETCH_EMPTY, FETCH_FAILED, fetch_result
+    from ingestion.seismic_feed import (
+        DEFAULT_USGS_EVENTS, MAX_USGS_EVENTS, fetch_seismic_events,
+    )
+    from ingestion.gdacs_feed import (
+        GDACS_QUERIES, MAX_GDACS_EVENTS, fetch_gdacs_pages, merge_gdacs_pages,
+    )
+    from ingestion.news_feed import (
+        DEFAULT_FEED_ENTRIES, MAX_FEED_ENTRIES, RSS_FEEDS, iter_feed_results,
+    )
+
+    default_limit, most = {
+        "usgs": (DEFAULT_USGS_EVENTS, MAX_USGS_EVENTS),
+        "gdacs": (MAX_GDACS_EVENTS, MAX_GDACS_EVENTS),
+        "news": (DEFAULT_FEED_ENTRIES, MAX_FEED_ENTRIES),
+    }[source]
+    if limit is None:
+        limit = default_limit
+    elif limit > most:
+        noun = {"news": "from each feed", "gdacs": "from each query"}.get(
+            source, "per run",
+        )
+        raise click.BadParameter(
+            f"{source} reads at most {most} records {noun}.", param_hint="'--limit'",
+        )
+
+    def source_results():
         if source == "usgs":
-            click.echo("Fetching bounded USGS seismic records...")
-            yield "usgs", fetch_seismic_events(limit=limit)
-        elif source == "gdacs":
-            click.echo("Fetching bounded GDACS hazard records...")
-            yield "gdacs", fetch_gdacs_events(limit=min(limit, MAX_GDACS_EVENTS))
-        else:
-            click.echo("Fetching bounded news feed records...")
-            yield from iter_feed_batches(
-                limit_per_feed=MAX_FEED_ENTRIES,
-                total_limit=limit,
+            click.echo(f"Fetching up to {limit} USGS seismic records...")
+            yield fetch_result(
+                "usgs", lambda: fetch_seismic_events(limit=limit), limit=limit,
             )
+        elif source == "gdacs":
+            click.echo(
+                f"Fetching up to {limit} GDACS hazard records from each of "
+                f"{len(GDACS_QUERIES)} queries (at most "
+                f"{limit * len(GDACS_QUERIES)}, each event once)..."
+            )
+
+            def read_gdacs():
+                gdacs_pages[:] = fetch_gdacs_pages(limit=limit)
+                return merge_gdacs_pages(gdacs_pages)
+
+            result = fetch_result("gdacs", read_gdacs, limit=limit)
+            if result.status != FETCH_FAILED:
+                # The merged count cannot say whether a page was full.
+                result = replace(result, full_pages=tuple(
+                    page.query.name for page in gdacs_pages if page.full
+                ))
+            yield result
+        else:
+            click.echo(
+                f"Fetching up to {limit} records from each of {len(RSS_FEEDS)} "
+                f"enabled news feeds (at most {limit * len(RSS_FEEDS):,})..."
+            )
+            yield from iter_feed_results(limit_per_feed=limit)
 
     if not dry_run:
         init_db()
 
+    # Each GDACS query's page, kept for its own line after the fetch.
+    gdacs_pages = []
     totals = Counter(received=0, new=0, known=0, revision=0, invalid=0)
     observations = []
     invalid_types = Counter()
-    successful_batches = 0
-    # One row per answered source, so a feed that answers with nothing is
-    # visible instead of hidden in the total.
-    per_source = []
-    for batch_source, leaves in source_batches():
-        successful_batches += 1
-        totals["received"] += len(leaves)
-        if dry_run:
-            per_source.append((batch_source, len(leaves), None))
+    # One row per source read, so a source that failed or answered with
+    # nothing is visible instead of hidden in the total.
+    rows = []
+    for result in source_results():
+        row = SourceRow.from_fetch(result)
+        rows.append(row)
+        if result.status == FETCH_FAILED:
             continue
-        batch = collect_batch(leaves)
-        per_source.append((batch_source, len(leaves), batch.new + batch.revision))
+        totals["received"] += len(result.records)
+        if dry_run:
+            continue
+        batch = collect_batch(result.records)
+        row.new, row.revision = batch.new, batch.revision
+        row.known, row.invalid = batch.known, batch.invalid
         for field in ("new", "known", "revision", "invalid"):
             totals[field] += getattr(batch, field)
         observations.extend(batch.observations)
@@ -374,28 +457,53 @@ def ingest(source, limit, analyze, dry_run):
             if outcome.error_type is not None
         )
 
+    answered = [row for row in rows if row.status != FETCH_FAILED]
     if source == "news":
-        expected_batches = min(len(RSS_FEEDS), limit)
-        click.echo(
-            f"News feed fetches succeeded: {successful_batches}/{expected_batches}."
-        )
-        for batch_source, received, captured in per_source:
-            line = f"  {batch_source}: {received} received"
-            if captured is not None:
-                line += f", {captured} captured"
-            click.echo(line + ".")
-        empty = [batch_source for batch_source, received, _ in per_source if received == 0]
+        click.echo(f"News feed fetches succeeded: {len(answered)}/{len(RSS_FEEDS)}.")
+        for row in rows:
+            click.echo(_feed_line(row))
+        failed = [row.source for row in rows if row.status == FETCH_FAILED]
+        if failed:
+            click.echo(
+                "Could not be read (an error, a refused redirect, or an answer "
+                "that is not a feed; not evidence that nothing was published): "
+                f"{', '.join(failed)}."
+            )
+        empty = [row.source for row in rows if row.status == FETCH_EMPTY]
         if empty:
             click.echo(
-                "Answered with no records (an empty feed, a challenge page or a "
-                f"changed format; not evidence that nothing happened): {', '.join(empty)}."
+                "Answered with no records (a well-formed feed with no items; "
+                f"not evidence that nothing happened): {', '.join(empty)}."
             )
-        if expected_batches == 0:
+    elif source == "gdacs":
+        (row,) = rows
+        if row.status != FETCH_FAILED:
+            for page in gdacs_pages:
+                click.echo(_gdacs_page_line(page))
+            repeated = sum(len(page.records) for page in gdacs_pages) - row.received
+            click.echo(
+                f"  {row.received} distinct record(s); {repeated} returned more "
+                "than once, kept once."
+            )
+    else:
+        (row,) = rows
+        if row.at_limit:
+            click.echo(
+                f"Reached the limit of {limit}; {source} may hold more than was read."
+            )
+    report_to_actions(source, rows, dry_run=dry_run, echo=click.echo)
+
+    if source == "news":
+        if not RSS_FEEDS:
             raise click.ClickException("No news feeds are configured.")
-        if successful_batches == 0:
+        if not answered:
             raise click.ClickException(
                 "All configured news feed fetches failed; no records were returned."
             )
+    elif not answered:
+        raise click.ClickException(
+            f"The {source} fetch failed ({rows[0].reason}); no records were returned."
+        )
 
     if dry_run:
         click.echo(f"Fetched {totals['received']} source record(s).")
