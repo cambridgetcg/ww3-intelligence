@@ -236,9 +236,11 @@ print publisher text from them.
   of independence — independent reporting of one event, and a translation of
   one wire story, both share few tokens.
 - Sources registered beyond the original English set ship
-  `collection_enabled: false` and say so in their own caveat: no endpoint here
-  has been fetched, so none is confirmed to exist or to serve what its entry
-  claims. A human verifies a feed and its canonical hosts before enabling it,
+  `collection_enabled: false` and say so in their own caveat. The 0.1.3 set's
+  endpoints were never fetched here, so none is confirmed to exist or to serve
+  what its entry claims; the official feeds surveyed on 2026-11-09 (0.1.10)
+  were fetched and parsed, or say why not, but their publishers' terms were
+  not reviewed. A human verifies a feed and its canonical hosts before enabling it,
   and `ingestion/` has not been exercised against a non-UTF-8 or non-English
   response.
 - Actor aliases now carry native-script forms, so a mention can be seen in

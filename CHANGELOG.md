@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.1.10 — 2026-11-09
+
+- Register 47 official feeds surveyed on 2026-11-09, every one with
+  `collection_enabled: false`, so `ingest news` still reads the same 11 feeds.
+  They cover heads of government and their offices (White House briefings and
+  its all-categories news, the Kremlin, No 10, the German federal government,
+  Japan's Kantei, Iran's Office of the Supreme Leader), the State Department
+  and the Department of War, the European Commission and the EU High
+  Representative, HM Treasury and the Secret Intelligence Service, central
+  banks and financial bodies (Federal Reserve, ECB, Bank of England, Bank of
+  Japan, Swiss National Bank, Reserve Bank of India, Banco Central do Brasil,
+  Norges Bank, BIS, FSB), the WTO, TASS, and company, foundation, think-tank,
+  magazine and personal channels.
+- Each was fetched with the collector's own code from outside the collector's
+  network. 44 parsed with items, and each caveat records the feed's shape, item
+  count, newest item, item-link hosts and what its robots.txt said. Three could
+  not be confirmed and say so as unverified: the State Department's
+  Secretary's Remarks feed refused the collector with HTTP 403, the Kremlin's
+  timed out twice, and Bloomberg Philanthropies' listed no items. Two endpoints
+  are the targets of redirects the collector would refuse: Valdai's analytics
+  feed, and a Bluesky account named by its DID.
+- None is enabled, because no publisher's terms were reviewed; a person checks
+  them and enables a feed. Some carry a further reason of their own: robots.txt
+  on social.bund.de and valdaiclub.com asks AI crawlers to stay away; the Bank
+  of Japan publishes `http://` item links, which fail the HTTPS host check
+  until the collector upgrades them; the Reserve Bank of India's pubDates carry
+  no time zone; and the White House's all-categories feed repeats the items of
+  `white_house` and `white_house_briefings`, so it should replace them rather
+  than join them.
+- The Bluesky account and the NBIM podcast carry no canonical host and no
+  publisher: bsky.app and shows.acast.com serve every account, so a host match
+  could not tie a record to either. Substack, GOV.UK and EU feeds name their
+  exact subdomain or host, never substack.com, gov.uk or europa.eu.
+- Add 33 publisher actors: government bodies, central banks, international
+  organisations, foundations, companies, newsrooms, think tanks and four
+  people, each with names as aliases and no scores. Russia in Global Affairs
+  has no alias, because its name is also an ordinary phrase. The longest alias
+  wins an overlapping span, so text naming the Bank of Japan, the Reserve Bank
+  of India, the U.S. Department of State or Defense, or the Prime Minister's
+  Office of Japan now counts as a mention of that institution, not of the state
+  whose name it contains.
+
+A surveyed feed is configuration: a fetch that parsed shows the feed answered
+once, not that it will answer the collector, and each record must still match
+the hosts its entry names before it counts as the publisher speaking.
+
 ## 0.1.9 — 2026-11-09
 
 - The retired Fly app and its volume were deleted on 2026-11-09, after the
