@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from core.registry import get_source_profile
-from ingestion.http import fetch_limited
+from ingestion.http import fetch_limited_response
 
 
 _PROFILE = get_source_profile("gdacs")
@@ -200,7 +200,16 @@ class GdacsPage:
 
 
 def _fetch_page(query: GdacsQuery, *, limit: int, now: datetime) -> GdacsPage:
-    content = fetch_limited(
+    """One query's first page.
+
+    GDACS answers a query that matches nothing with ``204 No Content`` and no
+    body, not an empty feature collection: on 2026-11-09 the Orange and Red
+    query over one day was answered that way, while the same query over 30
+    days, a moment later, returned its 10 events. That answer is an empty
+    page, so a quiet window for one query cannot fail the read of the other.
+    Any other answer that is not a feature collection is a failure.
+    """
+    response = fetch_limited_response(
         GDACS_URL,
         request_get=requests.get,
         max_bytes=MAX_GDACS_RESPONSE_BYTES,
@@ -209,7 +218,9 @@ def _fetch_page(query: GdacsQuery, *, limit: int, now: datetime) -> GdacsPage:
         timeout=(3.05, 15),
         headers={"User-Agent": "ww3-intelligence/observation-ledger"},
     )
-    data = json.loads(content.decode("utf-8"))
+    if response.status == 204 and not response.body:
+        return GdacsPage(query, limit, 0, ())
+    data = json.loads(response.body.decode("utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("features"), list):
         raise ValueError("GDACS response must be a GeoJSON feature collection")
     records = []
@@ -231,7 +242,8 @@ def fetch_gdacs_pages(
 
     One GET per query, every window ending at the same moment. A failed GET
     fails the whole read: no page is returned, so a read never looks
-    complete with one question missing.
+    complete with one question missing. A query GDACS answers with no content
+    (nothing matched) is an empty page, not a failure.
     """
     if not 1 <= limit <= MAX_GDACS_EVENTS:
         raise ValueError(f"GDACS event limit must be between 1 and {MAX_GDACS_EVENTS}")

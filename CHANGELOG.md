@@ -60,7 +60,11 @@
   means GDACS may hold more matches than were read; the run names each full
   page, in its output and in the job summary, rather than comparing the merged
   count to the limit. If either query fails, the GDACS fetch fails for that run.
-  That the window applies to the end date is observed, not documented.
+  A query nothing matches is not a failure: GDACS answers it with 204 and no
+  body, as it did on 2026-11-09 for Orange and Red over one day, so it is read
+  as an empty page and a quiet month of Orange and Red alerts does not cost
+  the recent page. That the window applies to the end date is observed, not
+  documented.
 - Keep the time of day in IAEA's dates. IAEA writes "26-11-06  14:46", with no
   zone; feedparser dropped the time, so every IAEA item was stored at 00:00 UTC
   on its date. The time is now kept, read as UTC as every zoneless time is

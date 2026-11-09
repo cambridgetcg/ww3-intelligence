@@ -252,6 +252,43 @@ def test_cli_gdacs_reports_a_full_page_not_a_full_merged_count(tmp_path, monkeyp
     assert "| gdacs | ok | 4 | – | – | – | – |" in table
 
 
+def test_cli_gdacs_query_that_matches_nothing_does_not_fail_the_run(
+    requests_mock, tmp_path, monkeypatch,
+):
+    from ingestion.gdacs_feed import GDACS_URL
+
+    summary = tmp_path / "step-summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    leaf = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [1.0, 2.0]},
+        "properties": {"eventid": 7, "episodeid": 1, "eventtype": "WF"},
+    }
+
+    def answer(request, context):
+        # GDACS answers a query nothing matches with 204 and no body. (``qs``
+        # is lowercased by requests_mock.)
+        if request.qs["alertlevel"] == ["orange;red"]:
+            context.status_code = 204
+            return b""
+        return json.dumps({"type": "FeatureCollection", "features": [leaf]}).encode()
+
+    requests_mock.get(GDACS_URL, content=answer)
+    result = CliRunner().invoke(cli, ["ingest", "gdacs", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert len(requests_mock.request_history) == 2
+    assert (
+        "  recent (every alert level, end date in the last 3 days): 1 read." in result.output
+    )
+    assert (
+        "  orange-red (Orange and Red, end date in the last 30 days): 0 read; GDACS "
+        "listed none (not evidence that nothing happened)." in result.output
+    )
+    assert "Fetched 1 source record(s)." in result.output
+    assert "| gdacs | ok | 1 | – | – | – | – |" in summary.read_text(encoding="utf-8")
+
+
 def _fetched(source, status, records=(), *, reason=None, limit=100):
     from ingestion.http import FetchResult
 

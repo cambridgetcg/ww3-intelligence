@@ -388,6 +388,51 @@ def test_a_failed_gdacs_query_fails_the_whole_read(requests_mock):
     assert len(requests_mock.request_history) == 2
 
 
+def _gdacs_no_content_for(requests_mock, levels):
+    """GDACS's answer to a query nothing matches, seen on 2026-11-09: 204, no body."""
+    from ingestion.gdacs_feed import GDACS_URL
+
+    def answer(request, context):
+        if _query(request)["alertlevel"] in levels:
+            context.status_code = 204
+            return b""
+        context.headers["Content-Type"] = "application/json"
+        return json.dumps(_gdacs_answer(_gdacs_feature(**_WILDFIRE))).encode()
+
+    requests_mock.get(GDACS_URL, content=answer)
+
+
+def test_a_gdacs_query_nothing_matches_is_an_empty_page(requests_mock):
+    # A quiet month of Orange and Red alerts must not cost the recent page.
+    _gdacs_no_content_for(requests_mock, {"Orange;Red"})
+
+    recent, orange_red = fetch_gdacs_pages(limit=100)
+
+    assert [item["source_record_id"] for item in recent.records] == ["WF:1033644:1"]
+    assert (orange_red.served, orange_red.records, orange_red.full) == (0, (), False)
+    assert [
+        item["source_record_id"] for item in merge_gdacs_pages((recent, orange_red))
+    ] == ["WF:1033644:1"]
+
+
+def test_gdacs_matching_nothing_on_both_queries_reads_no_records(requests_mock):
+    _gdacs_no_content_for(requests_mock, {"Green;Orange;Red", "Orange;Red"})
+
+    assert fetch_gdacs_events(limit=100) == []
+    assert len(requests_mock.request_history) == 2
+
+
+@pytest.mark.parametrize("status, body", [(200, b""), (204, b"{}")])
+def test_gdacs_answer_without_features_is_still_a_failure(requests_mock, status, body):
+    # Only a 204 with no body means nothing matched; an empty 200 is not that.
+    from ingestion.gdacs_feed import GDACS_URL
+
+    requests_mock.get(GDACS_URL, status_code=status, content=body)
+
+    with pytest.raises(ValueError):
+        fetch_gdacs_events(limit=10)
+
+
 @pytest.mark.parametrize("limit", [0, 101])
 def test_gdacs_refuses_a_page_size_it_cannot_ask_for(requests_mock, limit):
     with pytest.raises(ValueError):

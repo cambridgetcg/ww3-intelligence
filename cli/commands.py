@@ -329,7 +329,9 @@ def _feed_line(row) -> str:
 def _gdacs_page_line(page) -> str:
     """One GDACS query's line: what it asks for, what it read, if it was full."""
     line = f"  {page.query.name} ({page.query.describe()}): {len(page.records)} read"
-    if page.full:
+    if page.served == 0:
+        line += "; GDACS listed none (not evidence that nothing happened)"
+    elif page.full:
         line += (
             f", a full page of {page.limit}; GDACS may hold more matches than "
             "were read"
