@@ -171,24 +171,85 @@ def test_cli_ingest_dry_run_does_not_initialize_database():
     init.assert_not_called()
 
 
-def test_cli_ingest_gdacs_collects_bounded_hazard_observation():
-    from core.db import AnalysisRun, Event, Observation
-
-    leaf = {
+def _gdacs_leaf(source_record_id):
+    return {
         "source": "gdacs",
-        "source_record_id": "VO:1:1",
+        "source_record_id": source_record_id,
         "type": "hazard",
         "raw_text": json.dumps({"title": "Source alert", "alert_level": "Orange"}),
     }
-    with patch("ingestion.gdacs_feed.fetch_gdacs_events", return_value=[leaf]) as fetch:
+
+
+def _gdacs_pages(*, limit=100, recent=(), orange_red=(), served=None):
+    """Two pages; ``served`` is each page's count before parsing, if not its records."""
+    from ingestion.gdacs_feed import ORANGE_RED_QUERY, RECENT_QUERY, GdacsPage
+
+    recent_served, orange_red_served = served or (len(recent), len(orange_red))
+    return (
+        GdacsPage(RECENT_QUERY, limit, recent_served, tuple(recent)),
+        GdacsPage(ORANGE_RED_QUERY, limit, orange_red_served, tuple(orange_red)),
+    )
+
+
+def test_cli_ingest_gdacs_collects_bounded_hazard_observation():
+    from core.db import AnalysisRun, Event, Observation
+
+    leaf = _gdacs_leaf("VO:1:1")
+    pages = _gdacs_pages(recent=[leaf], orange_red=[leaf])
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages", return_value=pages) as fetch:
         result = CliRunner().invoke(cli, ["ingest", "gdacs"])
 
     assert result.exit_code == 0, result.output
     fetch.assert_called_once_with(limit=100)
+    assert (
+        "Fetching up to 100 GDACS hazard records from each of 2 queries "
+        "(at most 200, each event once)..." in result.output
+    )
+    assert (
+        "  recent (every alert level, end date in the last 3 days): 1 read." in result.output
+    )
+    assert (
+        "  orange-red (Orange and Red, end date in the last 30 days): 1 read."
+        in result.output
+    )
+    assert "  1 distinct record(s); 1 returned more than once, kept once." in result.output
+    # The event both queries returned is one observation, captured once.
     assert Observation.select().count() == 1
+    assert "Received 1 source record(s)." in result.output
+    assert "Known unchanged: 0. Invalid: 0." in result.output
     assert AnalysisRun.select().count() == 0
     assert Event.select().count() == 0
     assert "No model analysis was requested" in result.output
+
+
+def test_cli_gdacs_reports_a_full_page_not_a_full_merged_count(tmp_path, monkeypatch):
+    summary = tmp_path / "step-summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    leaves = [_gdacs_leaf(f"WF:{index}:1") for index in range(5)]
+
+    # The recent page is full; the merged five records are no page's count.
+    full = _gdacs_pages(limit=3, recent=leaves[:3], orange_red=leaves[3:])
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages", return_value=full):
+        at_limit = CliRunner().invoke(cli, ["ingest", "gdacs", "--limit", "3", "--dry-run"])
+    # Neither page is full, although the merged four records exceed the limit.
+    short = _gdacs_pages(limit=3, recent=leaves[:2], orange_red=leaves[2:4])
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages", return_value=short):
+        below = CliRunner().invoke(cli, ["ingest", "gdacs", "--limit", "3", "--dry-run"])
+
+    assert at_limit.exit_code == 0, at_limit.output
+    assert (
+        "  recent (every alert level, end date in the last 3 days): 3 read, a full "
+        "page of 3; GDACS may hold more matches than were read." in at_limit.output
+    )
+    assert "orange-red (Orange and Red, end date in the last 30 days): 2 read." in (
+        at_limit.output
+    )
+    assert below.exit_code == 0, below.output
+    assert "full page" not in below.output
+    assert "may hold more" not in below.output
+    table = summary.read_text(encoding="utf-8")
+    assert "| gdacs | ok, recent page at the limit of 3 | 5 | – | – | – | – |" in table
+    assert "| gdacs | ok | 4 | – | – | – | – |" in table
 
 
 def _fetched(source, status, records=(), *, reason=None, limit=100):
@@ -360,11 +421,11 @@ def test_cli_news_ingest_reads_each_feed_to_its_own_bound():
 
 
 def test_cli_ingest_refuses_a_gdacs_limit_above_one_page():
-    with patch("ingestion.gdacs_feed.fetch_gdacs_events") as fetch:
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages") as fetch:
         result = CliRunner().invoke(cli, ["ingest", "gdacs", "--limit", "101", "--dry-run"])
 
     assert result.exit_code == 2
-    assert "gdacs reads at most 100 records per run" in result.output
+    assert "gdacs reads at most 100 records from each query" in result.output
     fetch.assert_not_called()
 
 
@@ -441,7 +502,7 @@ def test_cli_ingest_failed_usgs_or_gdacs_fetch_warns_and_exits_nonzero(
 
     with patch("ingestion.seismic_feed.fetch_seismic_events", side_effect=failure):
         usgs = CliRunner().invoke(cli, ["ingest", "usgs"])
-    with patch("ingestion.gdacs_feed.fetch_gdacs_events", side_effect=failure):
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages", side_effect=failure):
         gdacs = CliRunner().invoke(cli, ["ingest", "gdacs"])
 
     assert usgs.exit_code == 1
@@ -467,7 +528,7 @@ def test_cli_ingest_failed_usgs_or_gdacs_fetch_warns_and_exits_nonzero(
 def test_cli_ingest_outside_actions_neither_annotates_nor_writes_a_summary(tmp_path):
     assert "GITHUB_ACTIONS" not in os.environ
     assert "GITHUB_STEP_SUMMARY" not in os.environ
-    with patch("ingestion.gdacs_feed.fetch_gdacs_events", side_effect=OSError("x")):
+    with patch("ingestion.gdacs_feed.fetch_gdacs_pages", side_effect=OSError("x")):
         result = CliRunner().invoke(cli, ["ingest", "gdacs", "--dry-run"])
 
     assert result.exit_code == 1

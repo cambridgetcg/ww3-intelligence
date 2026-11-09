@@ -30,6 +30,8 @@ USGS_INTERVAL = 300
 NEWS_INTERVAL = 600
 GDACS_INTERVAL = 900
 WATCH_NEWS_LIMIT = 200
+# Per GDACS query: a cycle reads at most this many from each of the two, and
+# keeps an event both return once.
 WATCH_GDACS_LIMIT = 50
 COLLECTION_HEALTH_VERSION = "collection-health-v2"
 GROUP_INTERVALS = {

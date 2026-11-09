@@ -32,10 +32,13 @@ class SourceRow:
     revision: int | None = None
     known: int | None = None
     invalid: int | None = None
+    # See FetchResult.full_pages.
+    full_pages: tuple[str, ...] | None = None
 
     @classmethod
     def from_fetch(cls, result: FetchResult) -> "SourceRow":
         row = cls(result.source, result.status, result.reason, result.limit)
+        row.full_pages = result.full_pages
         if result.status != FETCH_FAILED:
             row.received = len(result.records)
         return row
@@ -43,6 +46,8 @@ class SourceRow:
     @property
     def at_limit(self) -> bool:
         """The answer filled its bound, so the source may hold more."""
+        if self.full_pages is not None:
+            return bool(self.full_pages)
         return (
             self.limit is not None
             and self.received is not None
@@ -58,6 +63,12 @@ class SourceRow:
     def status_text(self) -> str:
         if self.status == FETCH_FAILED and self.reason:
             return f"{self.status} ({self.reason})"
+        if self.at_limit and self.full_pages:
+            noun = "page" if len(self.full_pages) == 1 else "pages"
+            return (
+                f"{self.status}, {' and '.join(self.full_pages)} {noun} "
+                f"at the limit of {self.limit}"
+            )
         if self.at_limit:
             return f"{self.status}, at the limit of {self.limit}"
         return self.status

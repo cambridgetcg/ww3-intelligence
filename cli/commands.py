@@ -326,13 +326,28 @@ def _feed_line(row) -> str:
     return line + "."
 
 
+def _gdacs_page_line(page) -> str:
+    """One GDACS query's line: what it asks for, what it read, if it was full."""
+    line = f"  {page.query.name} ({page.query.describe()}): {len(page.records)} read"
+    if page.full:
+        line += (
+            f", a full page of {page.limit}; GDACS may hold more matches than "
+            "were read"
+        )
+    return line + "."
+
+
 @cli.command("ingest")
 @click.argument("source", type=click.Choice(["usgs", "gdacs", "news"]))
 @click.option(
     "--limit", default=None, type=click.IntRange(1, MAX_INGEST_LIMIT),
     help=(
         "Most records read from each source: the USGS query (default 200, at "
-        "most 1000), the GDACS list (default and at most 100), or each enabled "
+        "most 1000), each of the two GDACS queries (default and at most 100, "
+        "one page each: every alert level with an end date in the last 3 "
+        "days, and Orange and Red in the last 30; a GDACS run reads at most "
+        "twice LIMIT, an event both return is kept once, and a full page "
+        "means GDACS may hold more matches than were read), or each enabled "
         "news feed (default 100, at most 500), so a news run reads at most "
         "LIMIT times the number of enabled feeds and no feed's share depends "
         "on another's."
@@ -348,13 +363,17 @@ def _feed_line(row) -> str:
 )
 def ingest(source, limit, analyze, dry_run):
     """Fetch bounded source records and capture immutable observations."""
+    from dataclasses import replace
+
     from cli.run_report import SourceRow, report_to_actions
     from core.collection import collect_batch
     from ingestion.http import FETCH_EMPTY, FETCH_FAILED, fetch_result
     from ingestion.seismic_feed import (
         DEFAULT_USGS_EVENTS, MAX_USGS_EVENTS, fetch_seismic_events,
     )
-    from ingestion.gdacs_feed import MAX_GDACS_EVENTS, fetch_gdacs_events
+    from ingestion.gdacs_feed import (
+        GDACS_QUERIES, MAX_GDACS_EVENTS, fetch_gdacs_pages, merge_gdacs_pages,
+    )
     from ingestion.news_feed import (
         DEFAULT_FEED_ENTRIES, MAX_FEED_ENTRIES, RSS_FEEDS, iter_feed_results,
     )
@@ -367,7 +386,9 @@ def ingest(source, limit, analyze, dry_run):
     if limit is None:
         limit = default_limit
     elif limit > most:
-        noun = "from each feed" if source == "news" else "per run"
+        noun = {"news": "from each feed", "gdacs": "from each query"}.get(
+            source, "per run",
+        )
         raise click.BadParameter(
             f"{source} reads at most {most} records {noun}.", param_hint="'--limit'",
         )
@@ -379,10 +400,23 @@ def ingest(source, limit, analyze, dry_run):
                 "usgs", lambda: fetch_seismic_events(limit=limit), limit=limit,
             )
         elif source == "gdacs":
-            click.echo(f"Fetching up to {limit} GDACS hazard records...")
-            yield fetch_result(
-                "gdacs", lambda: fetch_gdacs_events(limit=limit), limit=limit,
+            click.echo(
+                f"Fetching up to {limit} GDACS hazard records from each of "
+                f"{len(GDACS_QUERIES)} queries (at most "
+                f"{limit * len(GDACS_QUERIES)}, each event once)..."
             )
+
+            def read_gdacs():
+                gdacs_pages[:] = fetch_gdacs_pages(limit=limit)
+                return merge_gdacs_pages(gdacs_pages)
+
+            result = fetch_result("gdacs", read_gdacs, limit=limit)
+            if result.status != FETCH_FAILED:
+                # The merged count cannot say whether a page was full.
+                result = replace(result, full_pages=tuple(
+                    page.query.name for page in gdacs_pages if page.full
+                ))
+            yield result
         else:
             click.echo(
                 f"Fetching up to {limit} records from each of {len(RSS_FEEDS)} "
@@ -393,6 +427,8 @@ def ingest(source, limit, analyze, dry_run):
     if not dry_run:
         init_db()
 
+    # Each GDACS query's page, kept for its own line after the fetch.
+    gdacs_pages = []
     totals = Counter(received=0, new=0, known=0, revision=0, invalid=0)
     observations = []
     invalid_types = Counter()
@@ -436,6 +472,16 @@ def ingest(source, limit, analyze, dry_run):
             click.echo(
                 "Answered with no records (a well-formed feed with no items; "
                 f"not evidence that nothing happened): {', '.join(empty)}."
+            )
+    elif source == "gdacs":
+        (row,) = rows
+        if row.status != FETCH_FAILED:
+            for page in gdacs_pages:
+                click.echo(_gdacs_page_line(page))
+            repeated = sum(len(page.records) for page in gdacs_pages) - row.received
+            click.echo(
+                f"  {row.received} distinct record(s); {repeated} returned more "
+                "than once, kept once."
             )
     else:
         (row,) = rows

@@ -8,7 +8,10 @@ import pytest
 
 from ingestion.http import FetchRefusal
 from ingestion.seismic_feed import fetch_seismic_events, parse_usgs_feature, usgs_query
-from ingestion.gdacs_feed import fetch_gdacs_events, gdacs_query, parse_gdacs_feature
+from ingestion.gdacs_feed import (
+    ORANGE_RED_QUERY, RECENT_QUERY, GdacsPage, fetch_gdacs_events, fetch_gdacs_pages,
+    gdacs_query, merge_gdacs_pages, parse_gdacs_feature,
+)
 
 
 def _query(request) -> dict:
@@ -208,10 +211,13 @@ def test_fetch_gdacs_events_is_bounded_and_skips_malformed_sibling(requests_mock
 
     result = fetch_gdacs_events(limit=2)
 
+    # Both queries got the same answer here, so its one valid event is kept once.
     assert [item["source_record_id"] for item in result] == ["VO:1000144:1"]
-    sent = _query(requests_mock.request_history[0])
-    assert sent["pageSize"] == "2"
-    assert "limit" not in sent
+    assert len(requests_mock.request_history) == 2
+    for request in requests_mock.request_history:
+        sent = _query(request)
+        assert sent["pageSize"] == "2"
+        assert "limit" not in sent
 
 
 def test_gdacs_query_asks_for_recent_events_at_every_alert_level():
@@ -224,6 +230,14 @@ def test_gdacs_query_asks_for_recent_events_at_every_alert_level():
         "pageSize": 100,
     }
     assert gdacs_query(limit=50, days=1, now=now)["fromDate"] == "2026-11-07T22:00:00"
+    assert gdacs_query(
+        limit=100, days=30, now=now, alert_levels=("Orange", "Red"),
+    ) == {
+        "eventlist": "EQ;TC;FL;VO;DR;WF",
+        "alertlevel": "Orange;Red",
+        "fromDate": "2026-10-09T22:00:00",
+        "pageSize": 100,
+    }
 
 
 def test_fetch_gdacs_events_keeps_its_client_side_bound(requests_mock):
@@ -239,10 +253,146 @@ def test_fetch_gdacs_events_keeps_its_client_side_bound(requests_mock):
     assert [item["source_record_id"] for item in result] == [
         "VO:0:1", "VO:1:1", "VO:2:1",
     ]
-    sent = _query(requests_mock.request_history[0])
-    assert sent["alertlevel"] == "Green;Orange;Red"
-    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", sent["fromDate"])
-    assert "toDate" not in sent
+    pages = fetch_gdacs_pages(limit=3)
+    assert [(page.served, len(page.records), page.full) for page in pages] == [
+        (5, 3, True), (5, 3, True),
+    ]
+    sent = [_query(request) for request in requests_mock.request_history[:2]]
+    assert [query["alertlevel"] for query in sent] == ["Green;Orange;Red", "Orange;Red"]
+    for query in sent:
+        assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", query["fromDate"])
+        assert "toDate" not in query
+
+
+def _gdacs_answer(*features):
+    return {"type": "FeatureCollection", "features": list(features)}
+
+
+def _gdacs_by_level(requests_mock, *, recent, orange_red):
+    """Answer each query with its own features, told apart by ``alertlevel``."""
+    from ingestion.gdacs_feed import GDACS_URL
+
+    def answer(request, context):
+        if _query(request)["alertlevel"] == "Green;Orange;Red":
+            return _gdacs_answer(*recent)
+        return _gdacs_answer(*orange_red)
+
+    requests_mock.get(GDACS_URL, json=answer)
+
+
+_WILDFIRE = {"eventid": 1033644, "eventtype": "WF", "alertlevel": "Green"}
+_DROUGHT = {"eventid": 1018332, "episodeid": 26, "eventtype": "DR", "alertlevel": "Orange"}
+_CYCLONE = {"eventid": 1001346, "episodeid": 10, "eventtype": "TC", "alertlevel": "Red"}
+
+
+def test_gdacs_asks_every_level_recently_and_orange_red_over_30_days(requests_mock):
+    now = datetime(2026, 11, 9, 0, 0, 46, tzinfo=timezone.utc)
+    _gdacs_by_level(
+        requests_mock,
+        recent=[_gdacs_feature(**_WILDFIRE)],
+        orange_red=[_gdacs_feature(**_DROUGHT)],
+    )
+
+    recent, orange_red = fetch_gdacs_pages(limit=100, now=now)
+
+    # One page each, both windows ending at the same moment: no toDate, no
+    # pageNumber, and no ``limit``, which GDACS ignores.
+    assert [_query(request) for request in requests_mock.request_history] == [
+        {
+            "eventlist": "EQ;TC;FL;VO;DR;WF", "alertlevel": "Green;Orange;Red",
+            "fromDate": "2026-11-06T00:00:46", "pageSize": "100",
+        },
+        {
+            "eventlist": "EQ;TC;FL;VO;DR;WF", "alertlevel": "Orange;Red",
+            "fromDate": "2026-10-10T00:00:46", "pageSize": "100",
+        },
+    ]
+    assert (recent.query, orange_red.query) == (RECENT_QUERY, ORANGE_RED_QUERY)
+    assert [item["source_record_id"] for item in recent.records] == ["WF:1033644:1"]
+    assert [item["source_record_id"] for item in orange_red.records] == ["DR:1018332:26"]
+    assert not recent.full and not orange_red.full
+    assert RECENT_QUERY.describe() == "every alert level, end date in the last 3 days"
+    assert ORANGE_RED_QUERY.describe() == "Orange and Red, end date in the last 30 days"
+
+
+def test_an_event_both_gdacs_queries_return_is_one_record(requests_mock):
+    _gdacs_by_level(
+        requests_mock,
+        recent=[_gdacs_feature(**_WILDFIRE), _gdacs_feature(**_CYCLONE)],
+        orange_red=[_gdacs_feature(**_CYCLONE), _gdacs_feature(**_DROUGHT)],
+    )
+
+    result = fetch_gdacs_events(limit=100)
+
+    assert [item["source_record_id"] for item in result] == [
+        "WF:1033644:1", "TC:1001346:10", "DR:1018332:26",
+    ]
+
+
+def test_merging_gdacs_pages_keeps_the_first_copy_and_tells_episodes_apart():
+    first = parse_gdacs_feature(_gdacs_feature(**_CYCLONE))
+    again = parse_gdacs_feature(_gdacs_feature(**_CYCLONE))
+    next_episode = parse_gdacs_feature(_gdacs_feature(**{**_CYCLONE, "episodeid": 11}))
+    pages = (
+        GdacsPage(RECENT_QUERY, 100, 2, (first, again)),
+        GdacsPage(ORANGE_RED_QUERY, 100, 2, (again, next_episode)),
+    )
+
+    merged = merge_gdacs_pages(pages)
+
+    assert [item["source_record_id"] for item in merged] == [
+        "TC:1001346:10", "TC:1001346:11",
+    ]
+    assert merged[0] is first
+
+
+def test_which_gdacs_query_returned_an_event_files_no_revision(requests_mock):
+    from core.collection import collect_batch
+    from core.db import Observation
+
+    drought = _gdacs_feature(**_DROUGHT)
+    # First run: the drought is on both pages. Second run: it has dropped off
+    # the recent page and only the Orange and Red query returns it.
+    _gdacs_by_level(requests_mock, recent=[drought], orange_red=[drought])
+    recent, orange_red = fetch_gdacs_pages(limit=100)
+    (from_recent,), (from_orange_red,) = recent.records, orange_red.records
+    assert from_recent["source_record_id"] == from_orange_red["source_record_id"]
+    assert from_recent["raw_text"] == from_orange_red["raw_text"]
+    first = collect_batch(merge_gdacs_pages((recent, orange_red)))
+
+    _gdacs_by_level(
+        requests_mock, recent=[_gdacs_feature(**_WILDFIRE)], orange_red=[drought],
+    )
+    second = collect_batch(fetch_gdacs_events(limit=100))
+
+    assert (first.received, first.new, first.known, first.revision) == (1, 1, 0, 0)
+    assert (second.received, second.new, second.known, second.revision) == (2, 1, 1, 0)
+    assert Observation.select().where(Observation.source == "gdacs").count() == 2
+    assert Observation.select().where(Observation.supersedes.is_null(False)).count() == 0
+
+
+def test_a_failed_gdacs_query_fails_the_whole_read(requests_mock):
+    import requests
+    from ingestion.gdacs_feed import GDACS_URL
+
+    def answer(request, context):
+        if _query(request)["alertlevel"] == "Orange;Red":
+            context.status_code = 503
+            return {}
+        return _gdacs_answer(_gdacs_feature(**_WILDFIRE))
+
+    requests_mock.get(GDACS_URL, json=answer)
+
+    with pytest.raises(requests.HTTPError):
+        fetch_gdacs_events(limit=10)
+    assert len(requests_mock.request_history) == 2
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+def test_gdacs_refuses_a_page_size_it_cannot_ask_for(requests_mock, limit):
+    with pytest.raises(ValueError):
+        fetch_gdacs_pages(limit=limit)
+    assert requests_mock.request_history == []
 
 
 # News feed tests

@@ -161,6 +161,11 @@ class FetchResult:
     # The record bound the source was read under, so an answer that reaches
     # it can be told apart from one that was read in full.
     limit: int | None = None
+    # For a source read as several bounded pages (GDACS), the names of the
+    # pages that reached ``limit``, which is then each page's bound: a merged
+    # record count can neither show nor rule out a full page. None for a
+    # single bounded read, judged by its record count.
+    full_pages: tuple[str, ...] | None = None
 
 
 def fetch_result(source: str, fetch: Callable[[], list], *, limit: int) -> FetchResult:
