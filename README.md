@@ -360,15 +360,18 @@ watcher and the Streamlit dashboard over a single SQLite volume. It was retired
 when collection moved to GitHub Actions. Its dashboard no longer answers, and
 there is no public live ledger.
 
-Clean-up of the Fly app and its volume is pending, so whether that volume, and
-with it the ledger of those seven weeks, still exists is unverified. Copies
-that `ops/fly_backup.sh` made while the Machine ran may also survive; neither
-has been checked. That ledger was never carried into the Actions ledger or the
-archive.
+Before the Fly app and its volume were deleted on 2026-11-09, the volume's
+SQLite file was copied to the lab Mac and checked: its SHA-256 matched the file
+on the volume, `PRAGMA integrity_check` returned ok, and it holds 12,226
+observations fetched from 2026-07-17 to 2026-09-01. It is kept beside the
+archive as a separate database. It was never carried into the Actions ledger,
+which started empty on 2026-09-01, and the two are not merged: their row ids
+overlap, and nothing here reconciles them. Copies that `ops/fly_backup.sh` made
+while the Machine ran have not been checked.
 
 `fly.toml`, `Dockerfile`, `requirements-deploy.lock`, `ops/fly_runtime.py`, and
-`ops/fly_backup.sh` stay in the tree until that clean-up is decided. They
-describe the retired deployment, not a running one.
+`ops/fly_backup.sh` stay in the tree as a record of the retired deployment.
+Nothing runs them, and the Fly app they name no longer exists.
 
 ## Evidence and capability limits
 

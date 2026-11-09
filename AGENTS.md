@@ -73,8 +73,9 @@ use requires an explicit analysis action plus a false value such as `0`.
 This repository is public. Production collection runs on GitHub Actions
 (`ww3-ingest.yml`), into a SQLite ledger carried in the Actions cache;
 `ww3-export.yml` encrypts copies of it, and the lab Mac collects, verifies and
-keeps them (`ops/ARCHIVE.md`). The Fly runtime was retired on 2026-09-01 and
-its clean-up is pending; do not describe it as live.
+keeps them (`ops/ARCHIVE.md`). The Fly runtime was retired on 2026-09-01, and its app and volume were deleted
+on 2026-11-09 after the volume's ledger was copied into the archive; do not
+describe it as live.
 
 - The archive's keyring, ciphertexts and databases stay on the lab Mac. Never
   commit them, read them into a chat, or print publisher text from them;
