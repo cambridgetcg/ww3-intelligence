@@ -28,7 +28,6 @@
         <a href="#method">Method</a>
         <a href="#contracts">Contracts</a>
         <a href="#limits">Limits</a>
-        <a href="https://ww3-intelligence.fly.dev/">Live ledger</a>
         <a href="https://github.com/cambridgetcg/ww3-intelligence">Source</a>
       </nav>
     </header>
@@ -42,14 +41,15 @@
           building explicit, reviewable interpretations over them.
         </p>
         <div class="notice" role="note">
-          <strong>This Pages site publishes documentation and portable specs only.</strong>
-          A separate lightweight Fly service hosts the collection-only watcher,
-          observation ledger, and dashboard. RhetorLint, assessment authoring,
-          and optional model work remain outside that hosted runtime.
+          <strong>This site publishes documentation and portable specs only.</strong>
+          Collection runs on GitHub Actions into a ledger kept in the Actions
+          cache, and encrypted copies of it are kept in a private archive; there
+          is no public live ledger. The Fly service that once hosted the
+          collector and dashboard was retired in September 2026. RhetorLint,
+          assessment authoring, and optional model work run only locally.
         </div>
         <div class="hero-actions">
-          <a class="button primary" href="https://ww3-intelligence.fly.dev/">Open live ledger</a>
-          <a class="button" href="#contracts">Explore the contracts</a>
+          <a class="button primary" href="#contracts">Explore the contracts</a>
           <a class="button" href="#limits">Read the boundaries</a>
         </div>
       </section>
@@ -102,8 +102,9 @@
           <p class="eyebrow">Published artifacts</p>
           <h2 id="contracts-title">Small contracts, directly inspectable</h2>
           <p>
-            These files are copied from the repository during deployment. They
-            describe shapes and identities; none is a live intelligence feed.
+            These files are copied from the repository when this documentation
+            is published. They describe shapes and identities; none is a live
+            intelligence feed.
           </p>
         </div>
 
@@ -188,7 +189,7 @@
     </main>
 
     <footer>
-      <p>Documentation/spec surface for the WW3 Observation Framework.</p>
+      <p>Documentation/spec surface for the WW3 Observation Framework. The source repository is public.</p>
       <p>Static by design. No tracking, remote fonts, or client-side analytics.</p>
     </footer>
   </body>

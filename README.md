@@ -280,7 +280,8 @@ The optional terminal feed is collection-first:
 The watcher intentionally has no analysis mode. Analyze selected Observation
 IDs separately so collection intervals cannot be stalled by long model calls.
 It keeps independent bounded cycles for USGS (5 minutes), RSS (10 minutes, 200
-records total), and GDACS (15 minutes, 50 records).
+records total), and GDACS (15 minutes, up to 50 records from each of its two
+queries).
 
 The optional dashboard starts on the Source Observations page:
 
@@ -296,58 +297,78 @@ shows names what wrote it — a specific AnalysisRun, or an operator.
 
 ## Published documentation
 
-GitHub Pages publishes a static documentation/spec surface at
-<https://cambridgetcg.github.io/ww3-intelligence/>. The deployment copies only
-the files under `site/` plus the source registry, actor registry, and assessment
-JSON Schema. It does not host the Python collector, SQLite ledger, feeds,
-observations, RhetorLint process, dashboard, or model-derived analysis.
+A reviewed copy of `site/`, with the source registry, actor registry, and
+assessment JSON Schema, is served at
+<https://cambridgetcg.github.io/ww3-intelligence/> from the
+cambridgetcg.github.io repository. It does not host the Python collector,
+SQLite ledger, feeds, observations, RhetorLint process, dashboard, or
+model-derived analysis.
 
-`.github/workflows/pages.yml` performs that bounded deployment after pushes to
-`main`. `.github/workflows/ci.yml` runs the isolated test suite separately.
+This repository is public, and it no longer deploys that copy: project Pages is
+off, and the workflow that deployed it was removed in 0.1.8 after failing on
+every push since Pages was switched off. Switching project Pages on again could
+put this repository's unreviewed `site/` at the same address as the reviewed
+copy. `.github/workflows/ci.yml` runs the isolated test suite.
 
-## Hosted prototype
+## Production collection
 
-The live observation dashboard is at
-<https://ww3-intelligence.fly.dev/>.
+Collection runs on GitHub Actions, with no host of its own, and the lab Mac
+keeps the history.
 
-The checked-in Fly configuration runs one always-on, 512 MiB shared-CPU Machine
-in London with one encrypted 1 GiB volume mounted at `/data`. A small supervisor
-performs the SQLite schema/integrity preflight, then runs the Streamlit dashboard
-and the collection-only USGS/RSS/GDACS watcher on that same Machine so both use
-the canonical `/data/ww3.db` ledger. Source fetches remain parallel while ledger
-writes are serialized.
+- `.github/workflows/ww3-ingest.yml` collects USGS, the enabled news feeds, and
+  GDACS into one SQLite ledger. The lab Mac asks for a run every 30 minutes;
+  the workflow's own `*/30` cron is the fallback, and GitHub delivers far fewer
+  of those ticks than it is asked for (about 5.8 a day between September and
+  November 2026).
+- The ledger passes from run to run in the Actions cache. Ingest restores it
+  with `fail-on-cache-miss`, so a missing cache fails the run instead of
+  quietly starting an empty ledger, and saves it back only from a guarded step
+  that `ww3-ingest.yml` describes. Its `start_new_ledger` dispatch input is the
+  one deliberate way to begin a new ledger.
+- Each run asks USGS for up to 1,000 events up to the moment of the request,
+  reads up to 500 entries from each enabled feed (every current feed in full)
+  rather than sharing one total between them, and asks GDACS two questions
+  rather than taking its default list of past Orange and Red events: every
+  alert level with an end date in the last three days, one page of 100, which
+  holds about the newest day and is nearly all Green; and Orange and Red
+  alerts with an end date in the last 30 days, which reads the older ones that
+  page leaves out. An event both return is stored once. An answer that is not
+  a feed (a challenge page, an error page, a body that does not parse as one)
+  counts as that feed failing, and each failed or empty feed is named in a
+  warning and in the run's step summary, beside per-feed counts. IAEA items
+  keep the time of day their feed states instead of midnight.
+- `.github/workflows/ww3-export.yml` encrypts a copy of the ledger to the
+  archive's keys every Monday, and once a day more when the lab Mac asks.
+  Scheduled exports also commit `ledger/status.json`, counts and a digest with
+  no publisher text, so that the public repository shows activity. Whether a
+  push made with `GITHUB_TOKEN` counts as activity for GitHub's 60-day rule is
+  not documented, so the lab's `watch` also re-enables a workflow GitHub has
+  disabled for inactivity.
+- The lab Mac collects every export, decrypts and verifies it, and keeps it:
+  `ops/lab_archive.py`, its LaunchAgents in `ops/lab/`, and the runbook in
+  [`ops/ARCHIVE.md`](ops/ARCHIVE.md).
 
-```bash
-fly apps create ww3-intelligence --org personal --yes
-fly volumes create ww3_data --app ww3-intelligence --region lhr --size 1 --yes
-fly deploy --ha=false --remote-only --yes
-```
+The cache is still the only live copy; while the lab Mac runs, the archive is
+at most about a day behind it. None of this is high availability or an alerting
+service. A failing source shows in its run's warnings and summary and in
+`ops/lab_archive.py watch`, and reaches nobody who is not looking.
 
-The hosted runtime fixes `WW3_DISABLE_LLM=1`. It does not provide or execute a
-Claude model path, RhetorLint engine, assessment author, or automatic
-truth/corroboration/power/intent inference. Its Streamlit health path proves
-web-process liveness. The supervisor separately requires the `/data` mount,
-checks free space, fails startup if SQLite cannot initialize/pass integrity, and
-stops the Machine if every collection group becomes stale. These checks are not
-an alerting service or a universal availability guarantee. Runtime processes
-drop root privileges after preparing the mounted volume. One Machine and one
-local volume are a lightweight prototype, not high availability or a complete
-backup strategy.
+## The retired Fly runtime
 
-On the operator Mac, `ops/fly_backup.sh` uses SQLite's online backup API to
-make a transactionally consistent copy from the running Machine, downloads it
-outside Fly, and requires both `quick_check` and a clean foreign-key check
-before publishing it under the owner-only
-`~/Backups/ww3-intelligence/` directory. It keeps 30 days by default:
+From 2026-07-17 to 2026-09-01 one Fly Machine in London ran the collection-only
+watcher and the Streamlit dashboard over a single SQLite volume. It was retired
+when collection moved to GitHub Actions. Its dashboard no longer answers, and
+there is no public live ledger.
 
-```bash
-ops/fly_backup.sh
-```
+Clean-up of the Fly app and its volume is pending, so whether that volume, and
+with it the ledger of those seven weeks, still exists is unverified. Copies
+that `ops/fly_backup.sh` made while the Machine ran may also survive; neither
+has been checked. That ledger was never carried into the Actions ledger or the
+archive.
 
-The local copy is independent of the Fly volume and its snapshots. It is not
-off-site, does not run while the Mac is asleep, and does not prove that a full
-restore into a replacement Fly app will succeed. The LaunchAgent installed on
-the operator Mac runs it daily; a separate restore drill remains necessary.
+`fly.toml`, `Dockerfile`, `requirements-deploy.lock`, `ops/fly_runtime.py`, and
+`ops/fly_backup.sh` stay in the tree until that clean-up is decided. They
+describe the retired deployment, not a running one.
 
 ## Evidence and capability limits
 
@@ -356,10 +377,17 @@ does not invoke Claude or write model-derived Events. It preserves bounded
 source responses, immutable normalized content, captured provenance,
 exact-content dedupe, and owner-only local state where POSIX permissions apply.
 
-CLI source collection defaults to 200 records per run. News divides that cap
-across the configured feeds; direct RSS adapter calls default to 100 records per
-feed and direct USGS adapter calls to 200. Callers can choose smaller bounded
-limits explicitly.
+CLI source collection is bounded per source. `ingest --limit` bounds the USGS
+query (default 200, at most 1,000), each of the two GDACS queries (default and
+at most 100, one page each, so up to 200 records, an event both return kept
+once), or each enabled news feed (default 100, at most 500), rather than
+dividing one total across the feeds, so no feed's share depends on another's.
+A GDACS page that is full says so: GDACS may hold more matches. The scheduled
+ingest asks for 1,000 USGS events and 500 entries a feed, which reads every
+current feed in full, so a feed's own window (how many items it serves and how
+far back they reach) is what limits it; a feed that reaches its bound says so.
+Direct RSS adapter calls default to 100 records per feed and direct USGS
+adapter calls to 200. Callers can choose smaller bounded limits explicitly.
 
 It does not establish source truth, authenticity, corroboration, independence,
 freshness, completeness, intent, or power. Publication or enactment is not a

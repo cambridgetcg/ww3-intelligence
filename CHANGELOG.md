@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.1.8 — 2026-11-08
+
+- The lab Mac is now the home of the export archive. `ops/lab_archive.py`
+  collects every encrypted export, keeps the ciphertext, decrypts it with the
+  archive key, and checks the database against its manifest: digest,
+  `PRAGMA integrity_check`, row count, and max id. An export whose ledger is
+  smaller than the last accepted one is kept aside as fork-suspected and never
+  becomes the latest copy. LaunchAgents in `ops/lab/` run the collection daily
+  and request an ingest run every 30 minutes; `ops/ARCHIVE.md` is the runbook.
+  Until now nothing showed that any export had been collected, decrypted, or
+  restored.
+- Exports are encrypted to the lab archive key as well as the legacy key of
+  2026-10-22, whose holder is unconfirmed. The workflow pins both fingerprints
+  and stops if either key file is missing.
+- Scheduled exports commit `ledger/status.json` (counts, id range, fetch-time
+  span, database digest; no publisher text) to `main`. GitHub disables a public
+  repository's schedules after 60 days without activity, and nothing else here
+  committed; the lab's daily `watch` also turns a workflow disabled that way
+  back on.
+- An artifact counts as an export only if GitHub records it as uploaded by this
+  repository's own export workflow on `main`. The archive key's public half is
+  public, so a ciphertext the key opens says nothing about who made it. An
+  export gpg can read without any key (`gpg --store`) is rejected: in a public
+  repository that artifact was readable by anyone.
+- Remove the GitHub Pages workflow. Project Pages is off, probably since about
+  2026-09-25 (a date inferred, not read from GitHub), and the workflow has
+  failed on every push since it went off; the public documentation is a
+  reviewed copy served from cambridgetcg.github.io.
+- The documentation no longer describes the Fly runtime or its dashboard as
+  live. It was retired on 2026-09-01 and clean-up of its app and volume is
+  pending; the ledger it held before that date was never carried over.
+- `ww3-export.yml` moves to `actions/checkout@v7`, `actions/cache/restore@v6`,
+  and `actions/upload-artifact@v7`.
+
+A verified archive copy is the database the export job described, byte for
+byte and row for row. It is not evidence that the observations are true or
+complete, or that every source was being collected while they were gathered.
+
 ## 0.1.7 — 2026-11-08
 
 - Read USGS up to the present moment. The query sent whole dates, so its window

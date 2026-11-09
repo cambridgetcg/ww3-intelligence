@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily archive job on the lab Mac (ops/ARCHIVE.md): request an export, collect
+  and verify it, then report collector health. ops/lab/install.sh fills the
+  @@...@@ placeholders; do not load this template as it stands.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.ww3-intelligence.lab.archive-pull</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>@@LIBEXEC@@/archive-daily.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>@@HOME@@</string>
+    <key>WW3_PYTHON</key>
+    <string>@@PYTHON@@</string>
+    <key>WW3_ARCHIVE_ROOT</key>
+    <string>@@ARCHIVE_ROOT@@</string>
+    <key>WW3_GH</key>
+    <string>@@GH@@</string>
+    <key>WW3_GPG</key>
+    <string>@@GPG@@</string>
+    <key>WW3_REPO</key>
+    <string>@@REPO@@</string>
+  </dict>
+  <!-- 04:20 local time. A Mac asleep then runs it once on waking. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>20</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>@@ARCHIVE_ROOT@@/logs/archive-pull.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@@ARCHIVE_ROOT@@/logs/archive-pull.err.log</string>
+</dict>
+</plist>

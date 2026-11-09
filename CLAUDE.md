@@ -9,8 +9,15 @@ optional derived layer.
 
 It does not establish truth, corroborate a source, infer risk in the projection
 layer, infer power or intent from mentions, or provide a universal
-prompt-injection sandbox. The optional Fly runtime hosts the collection-only
-watcher and dashboard; it does not host model analysis or RhetorLint.
+prompt-injection sandbox.
+
+Production collection runs on GitHub Actions: `ww3-ingest.yml` collects into a
+SQLite ledger carried between runs in the Actions cache, and `ww3-export.yml`
+encrypts copies of it to the archive on the lab Mac, which collects, verifies
+and keeps them (`ops/ARCHIVE.md`). The repository is public. The Fly runtime
+that hosted the watcher and dashboard was retired on 2026-09-01, and clean-up
+of its app and volume is pending; it never hosted model analysis or RhetorLint,
+and nothing hosts them now.
 
 ## Runtime layers
 
@@ -150,9 +157,13 @@ changes materially.
 - `spec/assessment.schema.json` — portable `ww3.assessment/v1` shape
 - `cli/feed.py` — optional observation-first terminal feed
 - `dashboard/app.py` — optional observation-first dashboard
-- `core/collector.py` — headless collection-only watcher shared by local/hosted UI paths
-- `ops/fly_runtime.py` — single-Machine dashboard/collector supervisor
-- `fly.toml` / `Dockerfile` — lightweight Fly deployment with persistent SQLite
+- `core/collector.py` — headless collection-only watcher shared by the local UI paths
+- `.github/workflows/ww3-ingest.yml` — production collection into the cached ledger
+- `.github/workflows/ww3-export.yml` — encrypted exports, and the weekly `ledger/status.json` commit
+- `ops/lab_archive.py` — the lab Mac's collector for the exports (`pull`, `watch`, `dispatch-ingest`, `accept-reset`)
+- `ops/lab/` — its LaunchAgent templates and install/uninstall scripts
+- `ops/ARCHIVE.md` — the archive runbook: keys, verification, restore, resets, the 60-day rule
+- `ops/fly_runtime.py`, `ops/fly_backup.sh`, `fly.toml`, `Dockerfile` — the retired Fly deployment, kept until its clean-up is decided
 
 ## Commands
 
@@ -210,8 +221,11 @@ against an adversary.
 Tests of the explicit rhetoric path may replace its Node subprocess, but the
 ordinary collection and projection boundaries must remain subprocess-free.
 
-Do not run live feeds, enable Claude, mutate ignored local databases, or deploy
-without explicit scope.
+Do not run live feeds, enable Claude, mutate ignored local databases, dispatch
+workflows, run `ops/lab_archive.py` against GitHub, install the lab
+LaunchAgents, or deploy without explicit scope. The archive's keyring and
+databases stay on the lab Mac: never read them into a chat, commit them, or
+print publisher text from them.
 
 ## Current limits
 
@@ -255,15 +269,23 @@ without explicit scope.
   sandbox; feed parsers materialize each bounded response.
 - Historical Events may lack Observation lineage; existing failed runs remain
   historical and collection does not retry them.
-- GitHub Pages deploys documentation and copied portable JSON artifacts only.
-  The separate Fly runtime hosts the dashboard, SQLite volume, and collection
-  watcher, but no RhetorLint process or model-derived analysis. Its single
-  Machine/volume topology is not high availability.
-- Per-group and per-source capture cycles are reported, not alerted on. A group
-  going stale reaches an operator only through the dashboard or the log; nothing
-  pushes it anywhere, and the Fly log buffer is short. Partial staleness is
-  deliberately not fatal — one publisher changing its feed URL must not end the
-  deployment — so a source can stop being collected while the runtime stays up.
+- The public documentation is a reviewed copy served from cambridgetcg.github.io;
+  this repository deploys nothing to Pages, and no dashboard, public ledger,
+  RhetorLint process, or model-derived analysis is hosted anywhere.
+- The Actions cache holds the only live copy of the ledger, and the archive on
+  the lab Mac trails it by up to about a day while that Mac runs. One cache and
+  one Mac are not high availability. A cache miss fails ingest rather than
+  forking the ledger; recovery is a deliberate new ledger, with the history
+  left in the archive (`ops/ARCHIVE.md`).
+- GitHub disables a public repository's schedules after 60 days without
+  repository activity. The weekly status commit and the lab's `watch`
+  re-enabling a disabled workflow are the guards; whether a `GITHUB_TOKEN` push
+  counts as activity is not documented.
+- Per-feed failures, including answers that are not feeds, are reported in each
+  ingest run's warnings and step summary, and per-source staleness in the lab's
+  `watch`; none of it is alerted on. One failing source does not stop the
+  others — a publisher changing its feed URL must not cost the rest a cycle — so
+  a source can stop being collected while every other source keeps arriving.
 - The RhetorLint bridge runs a sibling checkout, not a pinned release artifact,
   so upgrading that checkout changes this system's rhetoric output with no
   change here. The engine and rule hashes are recorded per run, which makes the
