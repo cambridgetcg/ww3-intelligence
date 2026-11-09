@@ -1,0 +1,24 @@
+{
+ "by_source": {
+  "aljazeera": 5912,
+  "bbc_world": 2360,
+  "dw_world": 2203,
+  "eu_council": 279,
+  "gdacs": 360,
+  "germany_federal_foreign_office": 13,
+  "iaea_topnews": 91,
+  "russia_mfa": 263,
+  "turkey_mfa": 202,
+  "un_news": 463,
+  "un_press": 517,
+  "usgs": 2219,
+  "white_house": 1372
+ },
+ "db_sha256": "3d5fe700554fa4545706298691269e62d75516127a485b4afb7a804074fe9f90",
+ "export_run_id": "42658759407",
+ "first_fetched_at": "2026-09-01 08:48:40.459327",
+ "last_fetched_at": "2026-11-09 16:28:49.774910",
+ "max_id": 16254,
+ "observations": 16254,
+ "schema": "ww3-ledger-status/1"
+}
