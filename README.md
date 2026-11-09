@@ -280,7 +280,8 @@ The optional terminal feed is collection-first:
 The watcher intentionally has no analysis mode. Analyze selected Observation
 IDs separately so collection intervals cannot be stalled by long model calls.
 It keeps independent bounded cycles for USGS (5 minutes), RSS (10 minutes, 200
-records total), and GDACS (15 minutes, 50 records).
+records total), and GDACS (15 minutes, up to 50 records from each of its two
+queries).
 
 The optional dashboard starts on the Source Observations page:
 
@@ -326,13 +327,16 @@ keeps the history.
   one deliberate way to begin a new ledger.
 - Each run asks USGS for up to 1,000 events up to the moment of the request,
   reads up to 500 entries from each enabled feed (every current feed in full)
-  rather than sharing one total between them, and asks GDACS for the last
-  three days' events at every alert level rather than its default list of
-  past Orange and Red ones. An answer that is not a feed (a challenge page, an
-  error page, a body that does not parse as one) counts as that feed failing,
-  and each failed or empty feed is named in a warning and in the run's step
-  summary, beside per-feed counts. IAEA items keep the time of day their feed
-  states instead of midnight.
+  rather than sharing one total between them, and asks GDACS two questions
+  rather than taking its default list of past Orange and Red events: every
+  alert level with an end date in the last three days, one page of 100, which
+  holds about the newest day and is nearly all Green; and Orange and Red
+  alerts with an end date in the last 30 days, which reads the older ones that
+  page leaves out. An event both return is stored once. An answer that is not
+  a feed (a challenge page, an error page, a body that does not parse as one)
+  counts as that feed failing, and each failed or empty feed is named in a
+  warning and in the run's step summary, beside per-feed counts. IAEA items
+  keep the time of day their feed states instead of midnight.
 - `.github/workflows/ww3-export.yml` encrypts a copy of the ledger to the
   archive's keys every Monday, and once a day more when the lab Mac asks.
   Scheduled exports also commit `ledger/status.json`, counts and a digest with
@@ -374,9 +378,11 @@ source responses, immutable normalized content, captured provenance,
 exact-content dedupe, and owner-only local state where POSIX permissions apply.
 
 CLI source collection is bounded per source. `ingest --limit` bounds the USGS
-query (default 200, at most 1,000), the GDACS list (default and at most 100),
-or each enabled news feed (default 100, at most 500), rather than dividing one
-total across the feeds, so no feed's share depends on another's. The scheduled
+query (default 200, at most 1,000), each of the two GDACS queries (default and
+at most 100, one page each, so up to 200 records, an event both return kept
+once), or each enabled news feed (default 100, at most 500), rather than
+dividing one total across the feeds, so no feed's share depends on another's.
+A GDACS page that is full says so: GDACS may hold more matches. The scheduled
 ingest asks for 1,000 USGS events and 500 entries a feed, which reads every
 current feed in full, so a feed's own window (how many items it serves and how
 far back they reach) is what limits it; a feed that reaches its bound says so.
