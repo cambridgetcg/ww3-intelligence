@@ -48,9 +48,9 @@ _CONFIRMED_FEEDS = {
         ("auswaertiges-amt.de",),
     ),
 }
-# Official feeds surveyed on 2026-11-09, each fetched once with the collector's
-# own code. All stay off until a person checks the publisher's terms; these
-# three could not be confirmed at all, for the reason each caveat names.
+# Official feeds surveyed on 2026-11-09, each fetched with the collector's own
+# code. All stay off until a person checks the publisher's terms; these three
+# could not be confirmed at all, for the reason each caveat names.
 _SURVEYED_20261109 = frozenset({
     "bcb_press_notes", "bis_cb_speeches", "bis_management_speeches",
     "bloomberg_philanthropies", "boe_news", "boe_speeches", "boj_whatsnew",
