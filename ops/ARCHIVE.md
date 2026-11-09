@@ -291,5 +291,7 @@ been measured here yet; `watch` flags any 6 hours without an ingest run.
 - It alerts no one. Problems reach a person through the exit status,
   `status.json` and the logs.
 - It does not repair a ledger, merge a fork, or put history back on GitHub.
-- It does not hold the ledger of the retired Fly runtime (2026-07-17 to
-  2026-09-01), which was never carried into the Actions ledger.
+- It does not merge the retired Fly runtime's ledger (2026-07-17 to
+  2026-09-01) into the Actions ledger. That ledger sits apart under `fly-era/`
+  in the archive root, copied from the Fly volume and checked against it before
+  the app was deleted on 2026-11-09; `pull` and `watch` never touch it.

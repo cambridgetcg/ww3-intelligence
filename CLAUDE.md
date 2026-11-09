@@ -163,7 +163,7 @@ changes materially.
 - `ops/lab_archive.py` — the lab Mac's collector for the exports (`pull`, `watch`, `dispatch-ingest`, `accept-reset`)
 - `ops/lab/` — its LaunchAgent templates and install/uninstall scripts
 - `ops/ARCHIVE.md` — the archive runbook: keys, verification, restore, resets, the 60-day rule
-- `ops/fly_runtime.py`, `ops/fly_backup.sh`, `fly.toml`, `Dockerfile` — the retired Fly deployment, kept until its clean-up is decided
+- `ops/fly_runtime.py`, `ops/fly_backup.sh`, `fly.toml`, `Dockerfile` — the retired Fly deployment, kept as a record; its app and volume were deleted on 2026-11-09 and nothing runs them
 
 ## Commands
 

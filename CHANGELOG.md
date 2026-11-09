@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.9 — 2026-11-09
+
+- The retired Fly app and its volume were deleted on 2026-11-09, after the
+  volume's ledger (12,226 observations, 2026-07-17 to 2026-09-01) was copied to
+  the lab Mac, matched against the file on the volume by SHA-256, and passed
+  `PRAGMA integrity_check`. README, AGENTS.md, CLAUDE.md and ops/ARCHIVE.md no
+  longer call that clean-up pending. The Fly-era ledger stays a separate
+  database; it is not merged into the Actions ledger.
+
 ## 0.1.8 — 2026-11-08
 
 - The lab Mac is now the home of the export archive. `ops/lab_archive.py`
