@@ -423,6 +423,57 @@ def test_cli_news_ingest_counts_a_block_page_as_a_failed_fetch(requests_mock):
     ]
 
 
+_STATEMENTS = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+<channel><title>Synthetic statements</title><link>https://www.whitehouse.gov/</link>
+<item><title>Statement one</title><link>https://www.whitehouse.gov/s/1/</link>
+<guid>https://www.whitehouse.gov/?p=1</guid><description>One.</description>
+<content:encoded><![CDATA[<p>Full text of statement one.</p>]]></content:encoded></item>
+<item><title>Statement two</title><link>https://www.whitehouse.gov/s/2/</link>
+<guid>https://www.whitehouse.gov/?p=2</guid><description>Two.</description>
+<content:encoded><![CDATA[<p>Full text of statement two.</p>]]></content:encoded></item>
+</channel></rss>
+"""
+
+
+def test_cli_news_ingest_stores_nothing_from_a_feed_cut_short(requests_mock):
+    from core.db import AnalysisRun, Event, Observation
+
+    statements = "https://statements.example.test/feed/"
+    working = "https://working.example.test/rss.xml"
+    feeds = {"white_house": statements, "working_feed": working}
+    rss = {"Content-Type": "application/rss+xml; charset=UTF-8"}
+    requests_mock.get(working, content=_SMALL_RSS, headers=rss)
+    # Cut inside the second statement's full text, after its guid: read as
+    # complete, it would be filed as a revision of statement two without it.
+    cut = _STATEMENTS[:_STATEMENTS.index(b"statement two.</p>")]
+
+    with patch("ingestion.news_feed.RSS_FEEDS", feeds), \
+         patch("core.stream.StreamWriter.write") as stream_write, \
+         patch("subprocess.run") as subprocess_run:
+        requests_mock.get(statements, content=_STATEMENTS, headers=rss)
+        whole = CliRunner().invoke(cli, ["ingest", "news"])
+        requests_mock.get(statements, content=cut, headers=rss)
+        short = CliRunner().invoke(cli, ["ingest", "news"])
+
+    assert whole.exit_code == 0, whole.output
+    assert short.exit_code == 0, short.output
+    assert (
+        f"  white_house: failed (incomplete document: application/rss+xml, "
+        f"{len(cut)} bytes)." in short.output
+    )
+    assert "  working_feed: ok, 1 received" in short.output
+    stored = Observation.select().where(Observation.source == "white_house")
+    assert stored.count() == 2
+    assert Observation.select().where(Observation.supersedes.is_null(False)).count() == 0
+    assert "No model analysis was requested" in short.output
+    assert AnalysisRun.select().count() == 0
+    assert Event.select().count() == 0
+    assert not Path(os.environ["WW3_STREAM_PATH"]).exists()
+    stream_write.assert_not_called()
+    subprocess_run.assert_not_called()
+
+
 def test_cli_news_ingest_reads_each_feed_to_its_own_bound():
     feeds = {
         "one": "https://example.test/one.xml",

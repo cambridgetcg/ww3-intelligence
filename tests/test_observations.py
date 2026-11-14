@@ -1,12 +1,15 @@
 from datetime import datetime
 import json
+import sqlite3
 import unicodedata
+from unittest.mock import patch
 
 import pytest
 
 from peewee import IntegrityError
 
-from core.db import AnalysisRun, Event, Observation, migrate_schema
+from core.collection import collect_leaf
+from core.db import AnalysisRun, Event, Observation, database, migrate_schema
 from core.observations import (
     compute_content_equivalence_key,
     compute_content_hash,
@@ -114,6 +117,138 @@ def test_database_guards_reject_bulk_update_and_delete():
         ).execute()
     with pytest.raises(IntegrityError, match="append-only"):
         Observation.delete().where(Observation.id == observation.id).execute()
+
+
+def _stored_columns(observation_id):
+    """Read one row as SQLite holds it, through a connection of its own."""
+    con = sqlite3.connect(database.database)
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute(
+            "SELECT * FROM observation WHERE id = ?", (observation_id,)
+        ).fetchone()
+    finally:
+        con.close()
+    return dict(row)
+
+
+def _rewrite(values, collides_on):
+    """Keep a stored row's identity on one side only and change its body."""
+    values = dict(values)
+    values["raw_text"] = "rewritten body"
+    if collides_on == "id":
+        values["dedupe_key"] = "a-key-no-row-holds"
+    else:
+        del values["id"]
+    return values
+
+
+def _model_fields(observation, collides_on):
+    fields = {
+        field.name: getattr(observation, field.name)
+        for field in Observation._meta.sorted_fields
+    }
+    return _rewrite(fields, collides_on)
+
+
+def _model_replace(observation, collides_on):
+    Observation.replace(**_model_fields(observation, collides_on)).execute()
+
+
+def _insert_on_conflict_replace(observation, collides_on):
+    fields = _model_fields(observation, collides_on)
+    Observation.insert(**fields).on_conflict_replace().execute()
+
+
+def _raw_insert_or_replace(observation, collides_on):
+    # A connection that never passes through core.db, as an operator tool or
+    # the workflow's inline Python would open one: the guard has to hold in
+    # the schema, not in this project's connection settings.
+    columns = _rewrite(_stored_columns(observation.id), collides_on)
+    names = ", ".join(f'"{name}"' for name in columns)
+    marks = ", ".join("?" for _ in columns)
+    con = sqlite3.connect(database.database)
+    try:
+        con.execute(
+            f"INSERT OR REPLACE INTO observation ({names}) VALUES ({marks})",
+            tuple(columns.values()),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize("collides_on", ["id", "dedupe_key"])
+@pytest.mark.parametrize(
+    "replace",
+    [_model_replace, _insert_on_conflict_replace, _raw_insert_or_replace],
+    ids=["model-replace", "insert-on-conflict-replace", "raw-insert-or-replace"],
+)
+def test_database_guards_reject_replace(replace, collides_on):
+    observation, _ = get_or_create_observation(_leaf(source_record_id="kept"))
+    before = _stored_columns(observation.id)
+
+    # REPLACE deletes the stored row without firing the delete guard unless a
+    # connection turns recursive_triggers on, and none of these does, so only
+    # an insert guard can refuse it. peewee raises its own IntegrityError, the
+    # bare connection sqlite3's.
+    with pytest.raises((IntegrityError, sqlite3.IntegrityError), match="append-only"):
+        replace(observation, collides_on)
+
+    assert _stored_columns(observation.id) == before
+    assert Observation.select().count() == 1
+
+
+def test_database_guards_reject_upsert_update():
+    observation, _ = get_or_create_observation(_leaf())
+    before = _stored_columns(observation.id)
+    fields = {
+        field.name: getattr(observation, field.name)
+        for field in Observation._meta.sorted_fields
+        if field.name != "id"
+    }
+
+    # The insert guard now refuses this before the update guard is reached;
+    # either refusal keeps the row.
+    with pytest.raises(IntegrityError, match="immutable|append-only"):
+        Observation.insert(**fields).on_conflict(
+            conflict_target=[Observation.dedupe_key],
+            update={Observation.raw_text: "rewritten body"},
+        ).execute()
+
+    assert _stored_columns(observation.id) == before
+
+
+def test_insert_or_ignore_of_a_stored_observation_is_refused_not_ignored():
+    observation, _ = get_or_create_observation(_leaf())
+    fields = {
+        field.name: getattr(observation, field.name)
+        for field in Observation._meta.sorted_fields
+        if field.name != "id"
+    }
+
+    # The guard cannot tell which conflict clause an insert carries, so a
+    # duplicate is refused loudly under every one of them.
+    with pytest.raises(IntegrityError, match="append-only"):
+        Observation.insert(**fields).on_conflict_ignore().execute()
+
+    assert Observation.select().count() == 1
+
+
+def test_guards_leave_numbered_inserts_and_the_capture_race_path_alone():
+    first, _ = get_or_create_observation(_leaf(source_record_id="first"))
+    second, created = get_or_create_observation(_leaf(source_record_id="second"))
+    assert created is True
+    assert second.id == first.id + 1
+
+    # A capture whose lookup missed a row another writer stored meanwhile
+    # collides on dedupe_key; it must still end as the stored record, known.
+    with patch.object(Observation, "get_or_none", return_value=None):
+        outcome = collect_leaf(_leaf(source_record_id="second"))
+
+    assert outcome.status == "known"
+    assert outcome.observation.id == second.id
+    assert Observation.select().count() == 2
 
 
 def test_analysis_run_keeps_mutable_processing_state_separate():
