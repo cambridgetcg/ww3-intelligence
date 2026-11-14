@@ -679,6 +679,158 @@ def test_fetch_rss_feed_reads_entries_whatever_the_declared_type(requests_mock):
     ]
 
 
+_LOCAL_FILE_FEED = b"""<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Local</title><item>
+<title>Text from a file on the collector</title>
+<link>https://www.whitehouse.gov/local-file/</link></item></channel></rss>"""
+
+
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+def test_feed_body_that_names_a_local_file_is_read_as_the_body(
+    requests_mock, tmp_path, monkeypatch, relative,
+):
+    # feedparser opens bytes as a file name when it can. A body that is
+    # exactly the path of a feed-shaped file here must not become that file.
+    local = tmp_path / "local-feed.xml"
+    local.write_bytes(_LOCAL_FILE_FEED)
+    if relative:
+        monkeypatch.chdir(tmp_path)
+        body = b"local-feed.xml"
+    else:
+        body = str(local).encode()
+    url = "https://example.test/statements.xml"
+    requests_mock.get(url, content=body, headers={"Content-Type": "application/rss+xml"})
+
+    with patch("ingestion.news_feed.RSS_FEEDS", {"white_house": url}):
+        (result,) = iter_feed_results(limit_per_feed=10)
+
+    assert (result.status, result.records, result.reason) == (
+        "failed", [], f"not a feed: application/rss+xml, {len(body)} bytes",
+    )
+
+
+# Two complete items, the second with a non-ASCII title and a CDATA body, so
+# a cut can fall in text, inside a tag, inside CDATA or inside a character.
+_TWO_ITEMS = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<rss version="2.0"><channel><title>Synthetic</title>\n'
+    '<item><title>First item</title><link>https://example.test/1</link>'
+    '<guid>https://example.test/1</guid>'
+    '<description><![CDATA[<p>First body.</p>]]></description></item>\n'
+    '<item><title>Second item from Zürich</title><link>https://example.test/2</link>'
+    '<guid>https://example.test/2</guid>'
+    '<description><![CDATA[<p>Second body.</p>]]></description></item>\n'
+    '</channel></rss>\n'
+).encode("utf-8")
+
+_ATOM_TWO_ENTRIES = b"""<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Synthetic</title>
+<id>urn:example:feed</id><updated>2026-11-01T00:00:00Z</updated>
+<entry><title>Atom item</title><id>urn:example:1</id>
+<link href="https://example.test/a1"/><updated>2026-11-01T00:00:00Z</updated>
+<summary>One.</summary></entry>
+<entry><title>Atom second</title><id>urn:example:2</id>
+<link href="https://example.test/a2"/><updated>2026-11-01T00:00:00Z</updated>
+<summary>Two.</summary></entry>
+</feed>
+"""
+
+_RDF_TWO_ITEMS = b"""<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+ xmlns="http://purl.org/rss/1.0/">
+<channel rdf:about="https://example.test/"><title>Synthetic</title>
+<link>https://example.test/</link><description>d</description></channel>
+<item rdf:about="https://example.test/r1"><title>RDF item</title>
+<link>https://example.test/r1</link><description>One.</description></item>
+<item rdf:about="https://example.test/r2"><title>RDF second</title>
+<link>https://example.test/r2</link><description>Two.</description></item>
+</rdf:RDF>
+"""
+
+
+def _cut_after(document: bytes, marker: bytes) -> bytes:
+    """The document up to the end of ``marker``, as a cut body arrives."""
+    return document[:document.index(marker) + len(marker)]
+
+
+@pytest.mark.parametrize("body", [
+    _cut_after(_TWO_ITEMS, b"Second it"),
+    _cut_after(_TWO_ITEMS, b"https://example.test/2</link><gu"),
+    _cut_after(_TWO_ITEMS, b"<p>Second bo"),
+    # The first of the two bytes that spell the u-umlaut.
+    _cut_after(_TWO_ITEMS, b"from Z\xc3"),
+    _cut_after(_ATOM_TWO_ENTRIES, b"<title>Atom sec"),
+    _cut_after(_RDF_TWO_ITEMS, b"<description>Tw"),
+], ids=["in-text", "in-tag", "in-cdata", "in-character", "atom", "rdf"])
+def test_fetch_rss_feed_refuses_a_document_that_ends_early(requests_mock, body):
+    # At least one whole entry comes before each cut, so feedparser's loose
+    # parser returns entries and only the strict parser saw the end.
+    assert body.count(b"</item>") + body.count(b"</entry>") >= 1
+    url = "https://example.test/cut.xml"
+    requests_mock.get(url, content=body, headers={"Content-Type": "application/rss+xml"})
+
+    with pytest.raises(FetchRefusal) as refused:
+        fetch_rss_feed(url, "white_house")
+
+    assert refused.value.reason == (
+        f"incomplete document: application/rss+xml, {len(body)} bytes"
+    )
+
+
+def test_feed_results_count_a_cut_document_as_failed(requests_mock):
+    url = "https://example.test/cut.xml"
+    body = _cut_after(_TWO_ITEMS, b"<p>Second bo")
+    requests_mock.get(url, content=body)
+
+    with patch("ingestion.news_feed.RSS_FEEDS", {"white_house": url}):
+        (result,) = iter_feed_results(limit_per_feed=10)
+
+    assert (result.status, result.records, result.reason) == (
+        "failed", [], f"incomplete document: no declared type, {len(body)} bytes",
+    )
+
+
+@pytest.mark.parametrize("body", [
+    _TWO_ITEMS.replace(b"<title>First item</title>", b"<title>Q&A item</title>"),
+    _TWO_ITEMS.replace(b"<title>First item</title>", b"<title>First&nbsp;item</title>"),
+    # Declared UTF-8, but the u-umlaut is served as one Latin-1 byte.
+    _TWO_ITEMS.replace(b"Z\xc3\xbcrich", b"Z\xfcrich"),
+    _TWO_ITEMS.replace(b"</guid>", b"</guid><media:credit>Desk</media:credit>", 1),
+    _TWO_ITEMS + b"<!-- cached 0.12s -->\n",
+    _TWO_ITEMS + b"<?cache hit?>\n \n\t\n",
+    # Faults expat reports that are not an early end: a second root after
+    # the first, a newline before the declaration, a mismatched end tag.
+    _TWO_ITEMS + b"<rss/>\n",
+    b"\n" + _TWO_ITEMS,
+    _TWO_ITEMS.replace(b"</item>\n</channel>", b"<b>x</i></item>\n</channel>"),
+], ids=[
+    "bare-ampersand", "undefined-entity", "mislabelled-charset",
+    "undeclared-prefix", "trailing-comment", "trailing-pi-and-space",
+    "junk-after-root", "space-before-declaration", "mismatched-tag",
+])
+def test_fetch_rss_feed_accepts_complete_documents_feedparser_flags(requests_mock, body):
+    url = "https://example.test/sloppy.xml"
+    requests_mock.get(url, content=body, headers={"Content-Type": "application/rss+xml"})
+
+    records = fetch_rss_feed(url, "white_house")
+
+    assert [r["source_record_id"] for r in records] == [
+        "https://example.test/1", "https://example.test/2",
+    ]
+    assert json.loads(records[1]["raw_text"])["summary"] == "<p>Second body.</p>"
+
+
+@pytest.mark.parametrize("body, ids", [
+    (_ATOM_TWO_ENTRIES, ["urn:example:1", "urn:example:2"]),
+    (_RDF_TWO_ITEMS, ["https://example.test/r1", "https://example.test/r2"]),
+], ids=["atom", "rdf"])
+def test_fetch_rss_feed_accepts_complete_atom_and_rdf(requests_mock, body, ids):
+    url = "https://example.test/feed"
+    requests_mock.get(url, content=body, headers={"Content-Type": "application/xml"})
+
+    assert [r["source_record_id"] for r in fetch_rss_feed(url, "bbc_world")] == ids
+
+
 def test_fetch_rss_feed_refuses_a_feed_whose_every_entry_is_unusable(requests_mock):
     url = "https://example.test/broken-entries.xml"
     requests_mock.get(url, content=b"<rss/>")
