@@ -22,6 +22,7 @@ from rich.text import Text
 
 from cli.rendering import terminal_line, terminal_text
 from core import collector as headless_collector
+from core.collection import CollectionBatch
 from core.db import AnalysisRun, Observation, database, init_db
 from core.projections import project_observation
 
@@ -167,9 +168,13 @@ def observation_watcher_thread(
         database.close()
 
 
-def _process_collected_leaves(leaves: list) -> None:
-    """Capture one batch without importing or entering model analysis."""
-    headless_collector.process_collected_leaves(leaves)
+def _process_collected_leaves(leaves: list) -> CollectionBatch:
+    """Capture one batch without importing or entering model analysis.
+
+    The collector loop reads the batch's counts for its heartbeat and its log
+    line, so the batch is returned rather than dropped.
+    """
+    return headless_collector.process_collected_leaves(leaves)
 
 
 def ingest_thread_usgs(
