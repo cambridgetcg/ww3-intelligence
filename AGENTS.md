@@ -44,7 +44,8 @@ This is a local evidence-first geopolitical monitoring prototype. Read
   attribution additionally requires registry and HTTPS host consistency.
 - Model-derived Events enter through the explicit AnalysisRun path in
   `core/pipeline.py`; collection must never invoke it implicitly.
-- Observation content is append-only. Corrections become linked revisions.
+- Observation content is append-only, enforced by triggers that refuse UPDATE,
+  DELETE and REPLACE. Corrections become linked revisions.
 - Model output is untrusted and must pass `analysis/schema.py` before storage.
 - Derived event and branch writes stay inside the fenced transaction in
   `core/pipeline.py`.

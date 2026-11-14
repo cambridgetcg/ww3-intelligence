@@ -1,5 +1,116 @@
 # Changelog
 
+## 0.1.11 — 2026-11-13
+
+Small fixes from a review of how collected records are processed. None of them
+changes how a record's stored text, source record id, content hash or dedupe
+key is computed, so nothing already stored is re-filed as a revision.
+
+- `feed --watch` fetches every enabled news feed each cycle again and stores
+  each one that answers. Since 2026-07-17 its capture wrapper stored a batch
+  and then dropped the result, so the collector loop failed when it read the
+  batch's counts. Each news cycle stored at most the first feed that answered
+  (normally `bbc_world`), never fetched the feeds after it, and skipped the
+  aggregate `news` heartbeat. Every USGS and GDACS cycle stored its batch but
+  printed `cycle failed (AttributeError)` and recorded no record count. The
+  wrapper now returns the batch. The scheduled `ingest` on Actions and
+  `python -m core.collector` never used this wrapper. The earlier tests
+  replaced the wrapper with a mock that answers any attribute, which is how
+  this went unnoticed; the new ones drive the real capture and replace only
+  the fetch.
+- A feed's body is read as the document it is. feedparser opens bytes as a file
+  name when it can, so a 200 body that was exactly a path on the collector
+  (absolute, or relative to the working directory, which is the checkout on
+  Actions) would have been replaced by that file, read with no byte bound and
+  outside the fetch's deadline. No such answer is known to have reached the
+  ledger. The body now reaches feedparser as a stream.
+- A feed document that ends before it is finished is a failed fetch, with the
+  reason `incomplete document: <media type>, <n> bytes` once feedparser has
+  recovered an entry from it; one cut before its first item or entry was
+  already refused as `not a feed`. Before, a body cut short but framed as
+  complete (a clean chunked end, a Content-Length equal to the cut, a dropped
+  connection with no framing) was accepted whenever feedparser recovered an
+  entry from it. The cut last entry would become a revision of a known item
+  with its text gone, which would stay the newest revision after the full text
+  returned; or a record filed under its link, when its guid came after the
+  cut; or a record with no id. Whether any such answer reached the ledger is
+  not known. Now nothing from such an answer is stored, and the next run reads
+  the feed again. Two limits. The check reads the error at which feedparser's
+  strict parser stopped, and that parser stops at its first error, so a cut is
+  not caught in a document whose strict parse had already failed for another
+  reason (for example a bare `&`, an undefined entity such as `&nbsp;`, an
+  undeclared prefix, whitespace before `<?xml`, a mismatched end tag, or a
+  DOCTYPE that feedparser's own rewriting breaks), and it is stored as before;
+  whether any enabled feed is in that class is not known. And a document whose
+  root is complete but which ends inside a trailing comment or tag is refused
+  for that run. Whether any enabled feed is served unfinished on every answer
+  is not known; such a feed would now be refused in every run without failing
+  the run. Like any failed feed, it would be named, as `incomplete document`,
+  in each run's warnings and step summary, and none of that is alerted on. If
+  every enabled feed's answer is refused or fails, the news step and so the
+  run fail, as for any run in which every feed fails; before, the cut records
+  were stored and the run passed.
+- Each ingest step has its own time limit: USGS 2 minutes, the news feeds 10,
+  GDACS 3, inside a job limit of 20 instead of 15. A fetch's own timeouts do
+  not bound a whole answer, so an endpoint that kept sending slowly could hold
+  its step until the job timed out. A job that times out is cancelled before
+  the guard and the save, so every row that run had captured, from every
+  source, would be lost. A step that reaches its own limit now fails like any
+  failed source: the guard and the save still run, the run fails for USGS or
+  the news feeds, and it warns for GDACS. A step stopped that way writes no
+  counts and names no failed or empty feed; the runner's timed-out error names
+  the step. This is read from the runner's source and replayed locally;
+  GitHub documents only that the step's process is killed, and no step has
+  reached its limit on a GitHub runner. A GDACS stall used to end as a
+  cancelled run, which the lab's `watch` flags; it now ends as a successful
+  run with a warning, so only that source's staleness shows it.
+  `ingestion/http.py` is unchanged, so a fetch's own deadline still does not
+  hold during a read, and the news limit is a margin over what has been seen,
+  not a bound on eleven slow feeds. In 100 runs from 11 to 13 November 2026
+  the slowest steps took 2 s, 12 s and 20 s.
+- Each ingest step's command replaces its shell (`exec`). The runner stops a
+  step by signalling the shell alone. Without `exec` the collector under it
+  would have kept writing to the ledger while the next source, the guard and
+  the save ran, and a second writer can make the other's insert fail with
+  `database is locked`. This is read from the runner's source and replayed
+  locally; it has not been observed on a GitHub runner.
+- Observations refuse REPLACE as well as UPDATE and DELETE. SQLite's REPLACE
+  removes the conflicting row without firing a delete trigger unless a
+  connection turns `recursive_triggers` on, so `Observation.replace()`,
+  `on_conflict_replace()` or a raw `INSERT OR REPLACE` could rewrite a stored
+  observation. No code here issued one. A new `observation_no_replace` trigger
+  refuses any insert that collides with a stored row on id or dedupe key, on
+  every connection to the file. An existing ledger gets the trigger the next
+  time this code initialises it, which every command that opens the ledger
+  does, one that only reads it such as `observations` included; for the
+  Actions ledger that is its next ingest run. That first open writes the
+  trigger, so it changes the file's bytes: point the CLI at a copy of an
+  archived database, as `ops/ARCHIVE.md` says. A script outside this
+  repository could notice two things:
+  `INSERT OR IGNORE` and `ON CONFLICT DO NOTHING` of a duplicate now raise
+  instead of passing silently, and a plain duplicate insert fails with
+  `observations are append-only` rather than `UNIQUE constraint failed`.
+- Opening an older local ledger no longer builds a wrong index. This applies to
+  a ledger whose observation table predates revision links (a prototype's;
+  v0.1.0 already had them), or whose prediction table holds rows written by
+  code from before 2026-07-26, when forecast provenance arrived. `init_db`
+  created every index before adding the missing column, and SQLite indexed the
+  quoted column name as a string constant: `quick_check` passed,
+  `integrity_check` failed, and on the prediction table `ww3.py resolve`
+  stopped with "database disk image is malformed". Tables are now created
+  first, then the added columns, then the indexes. A new ledger gets the same
+  tables, indexes and triggers as before plus the new trigger; only their
+  order in `sqlite_master` differs. The Actions ledger started empty on
+  2026-09-01 with both columns, so it was not exposed.
+- A ledger of that kind that earlier code has already opened keeps the damage;
+  this release does not repair it, and startup's `quick_check` does not see
+  it. If `PRAGMA integrity_check` names `observation_supersedes_id` or
+  `prediction_analysis_run_id`, run
+  `REINDEX observation_supersedes_id; REINDEX prediction_analysis_run_id;`
+  once. That rebuilds the two indexes from the rows and changes no row. It does
+  change the file's bytes, so run it on a working copy, never on an archived
+  database.
+
 ## 0.1.9 — 2026-11-09
 
 - The retired Fly app and its volume were deleted on 2026-11-09, after the
