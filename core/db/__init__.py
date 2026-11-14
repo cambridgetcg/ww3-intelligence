@@ -6,7 +6,7 @@ from pathlib import Path
 from peewee import (
     SqliteDatabase, Model, AutoField, CharField, TextField,
     IntegerField, FloatField, BooleanField, DateTimeField,
-    ForeignKeyField, DateField,
+    ForeignKeyField, DateField, sort_models,
 )
 from core.settings import database_path
 
@@ -523,12 +523,35 @@ def install_observation_guards():
         END
         """
     )
+    # REPLACE resolves a conflict by deleting the stored row, and that deletion
+    # fires no delete trigger while recursive_triggers is off, so the two guards
+    # above never see it. An insert that would collide on id or dedupe_key is
+    # refused instead, on every connection. When an insert lets SQLite number
+    # the row, NEW.id is documented as undefined here and reads -1; no writer
+    # here supplies an id, so ids count up from 1 and such an insert can
+    # collide only on dedupe_key. A row stored at id -1 would make every
+    # numbered insert collide, and capture would then fail with
+    # ObservationDoesNotExist. A duplicate insert under any conflict clause,
+    # IGNORE included, is an IntegrityError with this message rather than the
+    # UNIQUE one.
+    database.execute_sql(
+        """
+        CREATE TRIGGER IF NOT EXISTS observation_no_replace
+        BEFORE INSERT ON observation
+        WHEN EXISTS (SELECT 1 FROM observation WHERE id = NEW.id)
+          OR EXISTS (SELECT 1 FROM observation WHERE dedupe_key = NEW.dedupe_key)
+        BEGIN
+            SELECT RAISE(ABORT, 'observations are append-only');
+        END
+        """
+    )
 
 
 def remove_observation_guards():
     """Remove append-only triggers for controlled schema teardown only."""
     database.execute_sql("DROP TRIGGER IF EXISTS observation_no_update")
     database.execute_sql("DROP TRIGGER IF EXISTS observation_no_delete")
+    database.execute_sql("DROP TRIGGER IF EXISTS observation_no_replace")
 
 
 def init_db():
@@ -539,7 +562,9 @@ def init_db():
     _prepare_database_file()
     database.connect(reuse_if_open=True)
     current_version = _assert_supported_schema_version()
-    database.create_tables(ALL_MODELS, safe=True)
+    models = sort_models(ALL_MODELS)
+    for model in models:
+        model._schema.create_table(safe=True)
     # These structural checks are cheap and repair databases that were stamped
     # v2 by an interrupted/partial migration without repeating data backfills.
     # Additive columns therefore reach existing v2 volumes without a version bump.
@@ -547,6 +572,12 @@ def init_db():
     _migrate_forecast_provenance()
     if current_version < SCHEMA_VERSION:
         migrate_schema()
+    # Indexes come last because SQLite accepts an index on a column that does
+    # not exist yet as an index on its quoted name, a string constant, and the
+    # column added afterwards would disagree with every entry built for the
+    # rows already there.
+    for model in models:
+        model._schema.create_indexes(safe=True)
     install_observation_guards()
     verify_database_integrity()
     _harden_database_permissions()
