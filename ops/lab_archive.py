@@ -100,6 +100,16 @@ class ArchiveError(Exception):
     """A failure worth retrying later: nothing is recorded against the artifact."""
 
 
+class NotFound(ArchiveError):
+    """``gh api`` answered HTTP 404.  Only a caller that expects one catches it."""
+
+
+# How ``gh api`` reports a 404 on its first stderr line: GitHub's message and
+# the status ("gh: Not Found (HTTP 404)", seen 2026-11-16), or the status alone
+# when the answer carried no message.
+GH_API_NOT_FOUND = re.compile(r"gh: (?:.* \(HTTP 404\)|HTTP 404)")
+
+
 class Rejected(Exception):
     """An export whose content failed a check; the verdict is recorded."""
 
@@ -202,9 +212,10 @@ class GitHub:
         except (OSError, subprocess.SubprocessError) as exc:
             raise ArchiveError(f"gh {args[0]} could not run ({exc.__class__.__name__})") from exc
         if done.returncode != 0:
-            raise ArchiveError(
-                f"gh {' '.join(args[:2])} failed ({done.returncode}): {_first_line(done.stderr)}"
-            )
+            message = f"gh {' '.join(args[:2])} failed ({done.returncode}): {_first_line(done.stderr)}"
+            if args[0] == "api" and GH_API_NOT_FOUND.fullmatch(_first_line(done.stderr, 1024)):
+                raise NotFound(message)
+            raise ArchiveError(message)
         return done
 
     def get(self, path: str) -> Any:
@@ -350,7 +361,9 @@ def dispatch_export(ctx: Context, ref: str) -> dict[str, Any]:
     # Recent gh prints the new run's URL; older ones print nothing useful.
     match = re.search(r"/actions/runs/(\d+)", said)
     run_id: int | None = int(match.group(1)) if match else None
+    named = run_id is not None
     deadline = ctx.monotonic() + DISPATCH_WAIT.total_seconds()
+    seen = False
     while True:
         if run_id is None:
             earliest = requested_at - DISPATCH_CLOCK_SKEW
@@ -362,12 +375,28 @@ def dispatch_export(ctx: Context, ref: str) -> dict[str, Any]:
             if candidates:
                 run_id = min(candidates)[1]
         if run_id is not None:
-            run = ctx.github.get(f"repos/{ctx.github.repo}/actions/runs/{run_id}")
-            if run.get("status") == "completed":
-                conclusion = run.get("conclusion") or "unknown"
-                ctx.log("export-finished", run=run_id, conclusion=conclusion)
-                return {"run_id": run_id, "conclusion": conclusion}
+            try:
+                run = ctx.github.get(f"repos/{ctx.github.repo}/actions/runs/{run_id}")
+            except NotFound:
+                # GitHub can name a new run before its API serves it: on
+                # 2026-11-16 the run gh named answered 404, then succeeded 14 s
+                # later.  Not visible yet, so poll again.  A run found in the
+                # listing was visible there, so its 404 is an error as before.
+                if not named:
+                    raise
+                ctx.log("export-run-not-visible", run=run_id)
+            else:
+                seen = True
+                if run.get("status") == "completed":
+                    conclusion = run.get("conclusion") or "unknown"
+                    ctx.log("export-finished", run=run_id, conclusion=conclusion)
+                    return {"run_id": run_id, "conclusion": conclusion}
         if ctx.monotonic() >= deadline:
+            if named and not seen:
+                raise ArchiveError(
+                    f"the dispatched export run {run_id} was never visible in 15 minutes "
+                    "(every answer for it was a 404)"
+                )
             raise ArchiveError(
                 "the dispatched export "
                 + (f"run {run_id} " if run_id is not None else "")
