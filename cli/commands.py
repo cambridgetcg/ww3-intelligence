@@ -21,8 +21,10 @@ def cli(ctx):
     """WW3 observation and interpretation framework."""
     # ``ingest --dry-run`` is a true storage preview.  It still performs the
     # selected source fetch, but the command itself decides whether to open the
-    # database after it knows the flag value.
-    if ctx.invoked_subcommand not in {"ingest", "feed", "sources"}:
+    # database after it knows the flag value.  ``mentions`` reads a ledger file
+    # named on the command line, read-only, and must not create or migrate the
+    # default one.
+    if ctx.invoked_subcommand not in {"ingest", "feed", "sources", "mentions"}:
         init_db()
 
 
@@ -806,6 +808,149 @@ def casefile(observation_ids, limit, include_rhetoric, as_json):
         "corroboration; intent is not inferred. Use the ww3.assessment/v1 contract "
         "for evidence-linked, falsifiable intent hypotheses."
     )
+
+
+@cli.command("mentions")
+@click.argument("ledger_path", type=click.Path(path_type=Path))
+@click.option(
+    "--all-revisions", is_flag=True,
+    help="Count every stored revision, not only the newest of each source record.",
+)
+@click.option(
+    "--day-basis", type=click.Choice(["published", "fetched"]),
+    default="published", show_default=True,
+    help="Day each record by its published time (else its fetch time), or by its fetch time.",
+)
+@click.option(
+    "--csv", "csv_path", type=click.Path(dir_okay=False, path_type=Path), default=None,
+    help="Also write the rows as CSV to this file.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit agent-readable JSON.")
+def mentions(ledger_path, all_revisions, day_basis, csv_path, as_json):
+    """Count registered-actor mentions across one ledger file, read-only; no publisher text."""
+    from interpretation.mention_counts import (
+        DAY_BASIS_FETCHED,
+        DAY_BASIS_PUBLISHED,
+        LedgerReadError,
+        count_actor_mentions,
+        resolve_ledger_path,
+        write_rows_csv,
+    )
+
+    def refuse(exc: LedgerReadError):
+        if as_json:
+            click.echo(json.dumps({"error": {"code": exc.code}}, sort_keys=True))
+            click.get_current_context().exit(1)
+        raise click.ClickException(str(exc))
+
+    try:
+        ledger = resolve_ledger_path(ledger_path)
+    except LedgerReadError as exc:
+        refuse(exc)
+
+    # Checked before the scan, so a refusal costs no wait. The resolved target
+    # is what gets written, so a link cannot carry the CSV beside the ledger.
+    csv_target = None
+    if csv_path is not None:
+        csv_target = csv_path.expanduser().resolve()
+        if not csv_target.parent.is_dir():
+            raise click.ClickException("The --csv directory does not exist.")
+        if csv_target == ledger or csv_target.parent == ledger.parent:
+            raise click.ClickException(
+                "Refusing to write beside the ledger; choose another directory for --csv."
+            )
+
+    try:
+        payload = count_actor_mentions(
+            ledger,
+            all_revisions=all_revisions,
+            day_basis=DAY_BASIS_FETCHED if day_basis == "fetched" else DAY_BASIS_PUBLISHED,
+        )
+    except LedgerReadError as exc:
+        refuse(exc)
+
+    written = None
+    if csv_target is not None:
+        # Created at 0600, and an existing file is narrowed to 0600 before
+        # anything is written to it.
+        try:
+            descriptor = os.open(csv_target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                written = write_rows_csv(payload, handle)
+        except OSError as exc:
+            raise click.ClickException(
+                f"Could not write the --csv file ({type(exc).__name__})."
+            ) from None
+
+    if as_json:
+        click.echo(json.dumps(payload, ensure_ascii=True, sort_keys=True, allow_nan=False))
+        return
+
+    ledger_info = payload["ledger"]
+    selection = payload["selection"]
+    scan = payload["scan"]
+    truncation = scan["truncation"]
+    click.echo(
+        f"Mention counts {payload['contract']} · actor mentions {scan['contract']}"
+    )
+    click.echo(
+        f"Ledger {terminal_line(ledger_info['file_name'])} · "
+        f"{ledger_info['db_bytes']} bytes · sha256 {ledger_info['db_sha256']}"
+    )
+    click.echo(
+        f"Observations: {selection['observations_stored']} stored · "
+        f"{selection['observations_selected']} selected "
+        f"({payload['filters']['revisions']}) · "
+        f"{selection['observations_counted']} counted"
+    )
+    excluded = Counter()
+    for item in payload["source_identity"]["excluded"]:
+        excluded[item["status"]] += item["observations"]
+    click.echo(
+        "Excluded by source identity: "
+        + (", ".join(f"{status}={count}" for status, count in sorted(excluded.items()))
+           or "none")
+    )
+    days = payload["days"]
+    basis = payload["day_basis"]
+    span = f"{days['first']}..{days['last']}" if days["distinct"] else "no days"
+    click.echo(
+        f"Days ({payload['filters']['day_basis']}): "
+        f"{basis['published_at']} by published_at · {basis['fetched_at']} by fetched_at · "
+        f"{basis['undated']} undated · {span} ({days['distinct']} day(s))"
+    )
+    click.echo(
+        f"Scanned {scan['passages_scanned']} passage(s) · "
+        f"{scan['mentions_emitted']} span(s) in "
+        f"{scan['observations_with_mentions']} observation(s) · truncated: "
+        f"{truncation['scans_truncated']} scan(s), "
+        f"{truncation['passages_truncated']} observation(s) with a cut passage"
+    )
+    mentioned = [item for item in payload["totals"]["by_actor"] if item["spans"]]
+    if mentioned:
+        click.echo("\nRegistered actors with a visible mention:")
+        for item in mentioned:
+            click.echo(
+                f"  {item['actor_id']}: {item['observations_mentioning']} obs · "
+                f"{item['spans']} spans · {item['publisher_self_observations']} self obs"
+            )
+    silent = sorted(
+        item["actor_id"] for item in payload["totals"]["by_actor"] if not item["spans"]
+    )
+    if silent:
+        click.echo(f"No alias matched for: {', '.join(silent)}")
+    if payload["totals"]["by_source"]:
+        click.echo("\nSources counted:")
+        for item in payload["totals"]["by_source"]:
+            click.echo(
+                f"  {item['source_id']}: {item['observations_counted']} obs · "
+                f"{item['observations_with_mentions']} with a mention · "
+                f"{item['spans']} spans · {item['publisher_self_observations']} self obs"
+            )
+    click.echo(f"\nSCOPE: {payload['scope']}")
+    if written is not None:
+        click.echo(f"Wrote {written} row(s) to {terminal_line(str(csv_path))}.")
 
 
 @cli.command("validate-assessment")
