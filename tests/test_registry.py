@@ -18,6 +18,7 @@ from core.registry import (
     expand_alias_forms,
     registry_payload,
     rss_source_profiles,
+    source_identity_context,
     source_profiles,
 )
 from core.text_safety import contains_unsafe_controls
@@ -46,6 +47,35 @@ _CONFIRMED_FEEDS = {
         "https://www.auswaertiges-amt.de/static/includes/rss/Presse-RSS-Feed.xml",
         ("auswaertiges-amt.de",),
     ),
+}
+# Official feeds surveyed on 2026-11-09, each fetched with the collector's own
+# code. All stay off until a person checks the publisher's terms; these three
+# could not be confirmed at all, for the reason each caveat names.
+_SURVEYED_20261109 = frozenset({
+    "bcb_press_notes", "bis_cb_speeches", "bis_management_speeches",
+    "bloomberg_philanthropies", "boe_news", "boe_speeches", "boj_whatsnew",
+    "ecb_blog", "ecb_press", "eu_commission_press", "fed_monetary_policy",
+    "fed_speeches", "foreign_affairs", "fsb", "germany_bundesregierung_mastodon",
+    "gzero_media", "iran_leader_office", "japan_kantei_en", "kaja_kallas_bluesky",
+    "kremlin_president_news", "marc_andreessen_substack", "mike_bloomberg",
+    "nbim_in_good_company", "norges_bank_speeches", "ray_dalio_substack",
+    "rbi_press", "rbi_speeches", "rockefeller_foundation",
+    "russia_in_global_affairs", "sam_altman_blog", "samsung_newsroom_global",
+    "samsung_newsroom_kr", "snb_press", "snb_speeches", "tass", "toyota_times",
+    "uk_hm_treasury", "uk_no10", "uk_sis", "us_state_secretary_remarks",
+    "us_state_substack", "us_war_advisories", "us_war_releases", "valdai_club",
+    "white_house_briefings", "white_house_news", "wto_news",
+})
+_SURVEYED_UNCONFIRMED = {
+    "us_state_secretary_remarks": "HTTP 403",
+    "kremlin_president_news": "timed out",
+    "bloomberg_philanthropies": "listing no items",
+}
+# Every account on these platforms publishes under the same host, so a host
+# match could not tie a record to the account the entry names.
+_SHARED_PLATFORM_HOSTS = {
+    "kaja_kallas_bluesky": "bsky.app",
+    "nbim_in_good_company": "shows.acast.com",
 }
 _NATIVE_SCRIPT_ALIASES = {
     "state:china": ("中国", "中华人民共和国", "中華人民共和國"),
@@ -91,12 +121,12 @@ def test_on_disk_registries_load_under_the_shipped_validator():
 
     # Entry and alias totals are a canary: an accidental drop or a duplicated
     # identity changes them before it changes any visible casefile.
-    assert len(actors) == 39
-    assert len(sources) == 27
-    assert sum(len(item.aliases) for item in actors) == 261
+    assert len(actors) == 72
+    assert len(sources) == 74
+    assert sum(len(item.aliases) for item in actors) == 316
     # Only an alias whose characters decompose gains a second spelling, so the
-    # searchable surface grows by the 44 that do and by nothing else.
-    assert sum(len(item.alias_forms) for item in actors) == 305
+    # searchable surface grows by the 45 that do and by nothing else.
+    assert sum(len(item.alias_forms) for item in actors) == 361
 
 
 def test_registered_rss_sources_replace_dead_endpoints_and_diversify_roles():
@@ -152,6 +182,48 @@ def test_confirmed_feeds_collect_from_their_checked_endpoints():
         assert "checked against the publisher's own site" in profile.caveat
 
 
+def test_surveyed_official_feeds_are_registered_but_never_collected():
+    sources = {item.source_id: item for item in source_profiles()}
+    collected = {item.source_id for item in rss_source_profiles()}
+
+    assert _SURVEYED_20261109 <= set(sources)
+    assert not _SURVEYED_20261109 & collected
+    # The survey enabled nothing: collection reads the same feeds as before.
+    assert len(collected) == 11
+    for source_id in _SURVEYED_20261109:
+        profile = sources[source_id]
+        assert profile.collection_enabled is False
+        assert profile.delivery == "rss"
+        assert profile.endpoint.startswith("https://")
+        assert "official feeds surveyed on 2026-11-09" in profile.caveat
+        assert "registered disabled on 2026-11-09" in profile.caveat
+        if source_id in _SURVEYED_UNCONFIRMED:
+            assert "unverified" in profile.caveat
+            assert "a human must confirm this feed" in profile.caveat
+            assert _SURVEYED_UNCONFIRMED[source_id] in profile.caveat
+        else:
+            # It parsed, so only the publisher's terms hold it back.
+            assert "unverified" not in profile.caveat
+            assert "terms were not reviewed" in profile.caveat
+            assert "a person must check them" in profile.caveat
+
+
+def test_a_host_every_account_shares_is_never_a_canonical_host():
+    sources = {item.source_id: item for item in source_profiles()}
+
+    for source_id, host in _SHARED_PLATFORM_HOSTS.items():
+        profile = sources[source_id]
+        assert profile.canonical_hosts == ()
+        assert profile.publisher_actor_id is None
+        assert host in profile.caveat
+        context = source_identity_context(source_id, f"https://{host}/item")
+        assert context["status"] == "canonical-host-unverifiable"
+    for profile in sources.values():
+        # A suffix match on any of these would accept every author, office,
+        # or institution the platform serves.
+        assert not {"substack.com", "europa.eu", "gov.uk"} & set(profile.canonical_hosts)
+
+
 def test_first_party_statements_reach_past_the_anglosphere():
     sources = source_profiles()
     first_party = {
@@ -166,9 +238,9 @@ def test_first_party_statements_reach_past_the_anglosphere():
         "group:ukraine-mfa",
     } <= first_party
     assert locales == {
-        "ar", "de", "en", "fa", "fr", "he", "ja", "ko", "tr", "uk", "zh-Hans",
+        "ar", "de", "en", "fa", "fr", "he", "ja", "ko", "pt", "tr", "uk", "zh-Hans",
     }
-    assert sum(1 for item in sources if item.locale != "en") == 14
+    assert sum(1 for item in sources if item.locale != "en") == 17
 
 
 def test_every_source_states_its_caveat_and_publisher_hosts():
