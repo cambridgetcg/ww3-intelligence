@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from cli.commands import cli
 from core.registry import (
     ACTOR_CONTRACT,
+    ACTOR_KINDS,
     ALIAS_FORM_AS_REGISTERED,
     ALIAS_FORM_NFC,
     ALIAS_FORM_NFD,
@@ -18,8 +19,10 @@ from core.registry import (
     expand_alias_forms,
     registry_payload,
     rss_source_profiles,
+    source_identity_context,
     source_profiles,
 )
+from core.settings import PROJECT_ROOT
 from core.text_safety import contains_unsafe_controls
 
 
@@ -47,6 +50,35 @@ _CONFIRMED_FEEDS = {
         ("auswaertiges-amt.de",),
     ),
 }
+# Official feeds surveyed on 2026-11-09, each fetched with the collector's own
+# code. All stay off until a person checks the publisher's terms; these three
+# could not be confirmed at all, for the reason each caveat names.
+_SURVEYED_20261109 = frozenset({
+    "bcb_press_notes", "bis_cb_speeches", "bis_management_speeches",
+    "bloomberg_philanthropies", "boe_news", "boe_speeches", "boj_whatsnew",
+    "ecb_blog", "ecb_press", "eu_commission_press", "fed_monetary_policy",
+    "fed_speeches", "foreign_affairs", "fsb", "germany_bundesregierung_mastodon",
+    "gzero_media", "iran_leader_office", "japan_kantei_en", "kaja_kallas_bluesky",
+    "kremlin_president_news", "marc_andreessen_substack", "mike_bloomberg",
+    "nbim_in_good_company", "norges_bank_speeches", "ray_dalio_substack",
+    "rbi_press", "rbi_speeches", "rockefeller_foundation",
+    "russia_in_global_affairs", "sam_altman_blog", "samsung_newsroom_global",
+    "samsung_newsroom_kr", "snb_press", "snb_speeches", "tass", "toyota_times",
+    "uk_hm_treasury", "uk_no10", "uk_sis", "us_state_secretary_remarks",
+    "us_state_substack", "us_war_advisories", "us_war_releases", "valdai_club",
+    "white_house_briefings", "white_house_news", "wto_news",
+})
+_SURVEYED_UNCONFIRMED = {
+    "us_state_secretary_remarks": "HTTP 403",
+    "kremlin_president_news": "timed out",
+    "bloomberg_philanthropies": "listing no items",
+}
+# Every account on these platforms publishes under the same host, so a host
+# match could not tie a record to the account the entry names.
+_SHARED_PLATFORM_HOSTS = {
+    "kaja_kallas_bluesky": "bsky.app",
+    "nbim_in_good_company": "shows.acast.com",
+}
 _NATIVE_SCRIPT_ALIASES = {
     "state:china": ("中国", "中华人民共和国", "中華人民共和國"),
     "state:russia": ("Россия", "Российская Федерация"),
@@ -58,6 +90,18 @@ _NATIVE_SCRIPT_ALIASES = {
     "state:india": ("भारत",),
     "state:germany": ("Deutschland",),
     "state:turkey": ("Türkiye Cumhuriyeti",),
+    "state:taiwan": ("臺灣", "台湾"),
+    "state:south-korea": ("대한민국", "韩国", "韓國"),
+    "state:poland": ("Rzeczpospolita Polska",),
+    "state:venezuela": ("República Bolivariana de Venezuela",),
+    "state:azerbaijan": ("Azərbaycan",),
+    "state:armenia": ("Հայաստան",),
+    "state:pakistan": ("پاکستان",),
+    "state:afghanistan": ("افغانستان",),
+    "state:belarus": ("Беларусь",),
+    "state:syria": ("سوريا",),
+    "org:hamas": ("حركة حماس",),
+    "org:taliban": ("امارت اسلامی افغانستان",),
 }
 
 
@@ -91,12 +135,12 @@ def test_on_disk_registries_load_under_the_shipped_validator():
 
     # Entry and alias totals are a canary: an accidental drop or a duplicated
     # identity changes them before it changes any visible casefile.
-    assert len(actors) == 39
-    assert len(sources) == 27
-    assert sum(len(item.aliases) for item in actors) == 261
+    assert len(actors) == 93
+    assert len(sources) == 74
+    assert sum(len(item.aliases) for item in actors) == 538
     # Only an alias whose characters decompose gains a second spelling, so the
-    # searchable surface grows by the 44 that do and by nothing else.
-    assert sum(len(item.alias_forms) for item in actors) == 305
+    # searchable surface grows by the 80 that do and by nothing else.
+    assert sum(len(item.alias_forms) for item in actors) == 618
 
 
 def test_registered_rss_sources_replace_dead_endpoints_and_diversify_roles():
@@ -152,6 +196,48 @@ def test_confirmed_feeds_collect_from_their_checked_endpoints():
         assert "checked against the publisher's own site" in profile.caveat
 
 
+def test_surveyed_official_feeds_are_registered_but_never_collected():
+    sources = {item.source_id: item for item in source_profiles()}
+    collected = {item.source_id for item in rss_source_profiles()}
+
+    assert _SURVEYED_20261109 <= set(sources)
+    assert not _SURVEYED_20261109 & collected
+    # The survey enabled nothing: collection reads the same feeds as before.
+    assert len(collected) == 11
+    for source_id in _SURVEYED_20261109:
+        profile = sources[source_id]
+        assert profile.collection_enabled is False
+        assert profile.delivery == "rss"
+        assert profile.endpoint.startswith("https://")
+        assert "official feeds surveyed on 2026-11-09" in profile.caveat
+        assert "registered disabled on 2026-11-09" in profile.caveat
+        if source_id in _SURVEYED_UNCONFIRMED:
+            assert "unverified" in profile.caveat
+            assert "a human must confirm this feed" in profile.caveat
+            assert _SURVEYED_UNCONFIRMED[source_id] in profile.caveat
+        else:
+            # It parsed, so only the publisher's terms hold it back.
+            assert "unverified" not in profile.caveat
+            assert "terms were not reviewed" in profile.caveat
+            assert "a person must check them" in profile.caveat
+
+
+def test_a_host_every_account_shares_is_never_a_canonical_host():
+    sources = {item.source_id: item for item in source_profiles()}
+
+    for source_id, host in _SHARED_PLATFORM_HOSTS.items():
+        profile = sources[source_id]
+        assert profile.canonical_hosts == ()
+        assert profile.publisher_actor_id is None
+        assert host in profile.caveat
+        context = source_identity_context(source_id, f"https://{host}/item")
+        assert context["status"] == "canonical-host-unverifiable"
+    for profile in sources.values():
+        # A suffix match on any of these would accept every author, office,
+        # or institution the platform serves.
+        assert not {"substack.com", "europa.eu", "gov.uk"} & set(profile.canonical_hosts)
+
+
 def test_first_party_statements_reach_past_the_anglosphere():
     sources = source_profiles()
     first_party = {
@@ -166,9 +252,9 @@ def test_first_party_statements_reach_past_the_anglosphere():
         "group:ukraine-mfa",
     } <= first_party
     assert locales == {
-        "ar", "de", "en", "fa", "fr", "he", "ja", "ko", "tr", "uk", "zh-Hans",
+        "ar", "de", "en", "fa", "fr", "he", "ja", "ko", "pt", "tr", "uk", "zh-Hans",
     }
-    assert sum(1 for item in sources if item.locale != "en") == 14
+    assert sum(1 for item in sources if item.locale != "en") == 17
 
 
 def test_every_source_states_its_caveat_and_publisher_hosts():
@@ -239,7 +325,87 @@ def test_alias_case_sensitivity_and_text_stay_meaningful():
     assert cased["РФ"] is True
     assert cased["НАТО"] is True
     assert cased["Le Monde"] is True
+    # In lower case these are the adjective "Polish" and "catarrh".
+    assert cased["Polska"] is True
+    assert cased["Катар"] is True
     assert cased["中国"] is False
+
+
+def test_every_actor_kind_is_in_the_closed_set_and_documented():
+    readme = (PROJECT_ROOT / "registry" / "README.md").read_text(encoding="utf-8")
+
+    # Every kind in the set is used, so the set names nothing the registry
+    # does not hold, and every kind is explained where a reader looks for it.
+    assert {item.kind for item in actor_profiles()} == ACTOR_KINDS
+    for kind in ACTOR_KINDS:
+        assert f"`{kind}`" in readme, kind
+
+
+def test_contested_polities_and_armed_movements_carry_identity_only():
+    kinds = {item.actor_id: item.kind for item in actor_profiles()}
+
+    # A kind is a class of identity. It is not a finding on sovereignty,
+    # recognition, legitimacy or any government's designation.
+    assert kinds["state:taiwan"] == "state"
+    assert kinds["state:palestine"] == "state"
+    assert kinds["org:palestinian-authority"] == "government-body"
+    for actor_id in ("org:hamas", "org:hezbollah", "org:ansar-allah", "org:taliban"):
+        assert kinds[actor_id] == "armed-movement", actor_id
+
+
+def test_left_out_forms_stay_out_of_the_registry():
+    registered = {
+        alias_identity_key(text)
+        for actor in actor_profiles()
+        for text, _ in actor.aliases
+    }
+
+    for text in (
+        # A bare demonym or adjective is never an alias.
+        "Houthi", "Russian",
+        # Any spelling of the PRC's long name that China's aliases do not cover
+        # would read as Taiwan.
+        "Republic of China",
+        # The referent is ambiguous: the Palestinian Authority, or the
+        # authority in Gaza.
+        "Palestinian government",
+        # Korea as a whole; and a prefix of 남한강 and 남한산성 under the
+        # leading guard. South Korea carries 대한민국 instead.
+        "한국", "남한",
+        # Also "insistent", "diameter", "enthusiasm"; and in Arabic the dual
+        # "two students". Each actor carries a qualified form instead.
+        "مصر", "قطر", "حماس", "طالبان",
+        # A Quranic phrase, and part of other groups' names. The movement
+        # carries الحوثيون and جماعة الحوثي instead.
+        "أنصار الله",
+        # Persian "good fortune"; and also two Iranian provinces.
+        "یمن", "آذربایجان",
+    ):
+        assert alias_identity_key(text) not in registered, text
+
+
+def test_a_name_with_an_apostrophe_carries_each_spelling_in_use():
+    actors = {item.actor_id: item for item in actor_profiles()}
+
+    # The matcher reads U+0027 and U+2019 as different characters, and every
+    # occurrence of these names in the collected ledger uses U+2019.
+    for actor_id, name in (
+        ("state:china", "People{}s Republic of China"),
+        ("state:north-korea", "Democratic People{}s Republic of Korea"),
+    ):
+        texts = {text for text, _ in actors[actor_id].aliases}
+        assert {name.format("'"), name.format("\u2019")} <= texts, actor_id
+
+    # "Republic of Korea", South Korea's alias, lies inside North Korea's long
+    # name, so every spelling of it the North does not carry reads as the
+    # South. It also carries U+2018, U+02BC and no apostrophe at all.
+    north = {text for text, _ in actors["state:north-korea"].aliases}
+    for apostrophe in ("\u2018", "\u02bc", ""):
+        assert f"Democratic People{apostrophe}s Republic of Korea" in north
+    # A Hebrew name with a geresh is written with U+05F3 or with U+0027.
+    azerbaijan = {text for text, _ in actors["state:azerbaijan"].aliases}
+    name = "אזרבייג{}ן"
+    assert {name.format("\u05f3"), name.format("'")} <= azerbaijan
 
 
 def test_registry_rejects_a_native_script_alias_shared_by_two_actors(monkeypatch):
@@ -253,7 +419,8 @@ def test_registry_rejects_a_native_script_alias_shared_by_two_actors(monkeypatch
                 "aliases": [{"text": "中国", "case_sensitive": False}],
             },
             {
-                "actor_id": "org:two", "canonical_name": "Two", "kind": "org",
+                "actor_id": "org:two", "canonical_name": "Two",
+                "kind": "government-body",
                 "aliases": [{"text": "中国", "case_sensitive": True}],
             },
         ],
@@ -305,11 +472,13 @@ def test_registry_rejects_casefold_ambiguous_or_extended_aliases(monkeypatch):
         "contract": ACTOR_CONTRACT,
         "actors": [
             {
-                "actor_id": "org:one", "canonical_name": "One", "kind": "org",
+                "actor_id": "org:one", "canonical_name": "One",
+                "kind": "international-organization",
                 "aliases": [{"text": "UN", "case_sensitive": True}],
             },
             {
-                "actor_id": "org:two", "canonical_name": "Two", "kind": "org",
+                "actor_id": "org:two", "canonical_name": "Two",
+                "kind": "international-organization",
                 "aliases": [{"text": "un", "case_sensitive": False}],
             },
         ],
@@ -393,6 +562,14 @@ def test_case_sensitivity_cannot_excuse_a_spelling_only_difference(monkeypatch):
         _load_actors(monkeypatch, _actor_document(composed, decomposed))
     # Two case-sensitive aliases whose characters actually differ still stand.
     assert len(_load_actors(monkeypatch, _actor_document(composed, other))) == 2
+
+
+def test_registry_rejects_an_actor_kind_outside_the_set(monkeypatch):
+    document = _actor_document({"text": "Example", "case_sensitive": False})
+    document["actors"][0]["kind"] = "militia"
+
+    with pytest.raises(RuntimeError, match="unsupported actor kind"):
+        _load_actors(monkeypatch, document)
 
 
 def test_the_ambiguity_check_sees_every_spelling_the_matcher_will_search():

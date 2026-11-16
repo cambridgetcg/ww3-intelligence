@@ -71,6 +71,7 @@ def _adjacency(mention):
     ("ไทย", "รัฐบาลไทยแถลง", 6, MATCH_MODE_UNGUARDED),
     ("China", "China said today", 0, MATCH_MODE_BOUNDARY_GUARDED),
     ("Россия", "Россия заявила", 0, MATCH_MODE_BOUNDARY_GUARDED),
+    ("Հայաստան", "Հայաստան այսօր", 0, MATCH_MODE_BOUNDARY_GUARDED),
 ])
 def test_alias_visibility_holds_across_spaced_and_unspaced_scripts(
     alias, text, start, mode
@@ -87,6 +88,9 @@ def test_alias_visibility_holds_across_spaced_and_unspaced_scripts(
     ("Iran", "Iranian officials spoke"),
     ("China", "Chinatown reopened"),
     ("Иран", "Иранский представитель"),
+    # Armenian is spaced and cased like Cyrillic, so an inflected noun hides
+    # the bare alias in the same way.
+    ("Հայաստան", "Հայաստանի կառավարություն"),
 ])
 def test_spaced_script_aliases_keep_the_guard_that_protects_them(alias, text):
     assert _mentions(text, _profile("state:x", alias)) == []
@@ -434,3 +438,91 @@ def test_shipped_registry_sees_decomposed_native_script_text():
 
         assert mention.alias_form == ALIAS_FORM_NFD
         assert text[mention.start:mention.end] == mention.actual
+
+
+@pytest.mark.parametrize("text, actor_id, actual", [
+    # Before Belarus was registered, the unguarded 俄罗斯 inside it read as
+    # Russia.
+    ("白俄罗斯总统", "state:belarus", "白俄罗斯"),
+    # Without its twins, the North's long name read as the South through
+    # "Republic of Korea": typographic apostrophes, the modifier letter, and
+    # none at all.
+    *(
+        (
+            f"the Democratic People{mark}s Republic of Korea said",
+            "state:north-korea", f"Democratic People{mark}s Republic of Korea",
+        )
+        for mark in ("'", "\u2019", "\u2018", "\u02bc", "")
+    ),
+    ("the People’s Republic of China said", "state:china", "People’s Republic of China"),
+    ("the Republic of Korea said", "state:south-korea", "Republic of Korea"),
+    (
+        "the Islamic Emirate of Afghanistan said", "org:taliban",
+        "Islamic Emirate of Afghanistan",
+    ),
+])
+def test_shipped_registry_gives_an_overlap_to_the_longer_name(text, actor_id, actual):
+    from core.registry import actor_profiles
+
+    assert [
+        (item.actor_id, item.actual) for item in _mentions(text, *actor_profiles())
+    ] == [(actor_id, actual)]
+
+
+@pytest.mark.parametrize("text, actor_id", [
+    ("Palestine Action said", "state:palestine"),
+    ("Kataib Hezbollah fighters", "org:hezbollah"),
+    ("كتائب حزب الله", "org:hezbollah"),
+    ("the Pakistani Taliban said", "org:taliban"),
+    ("the Islamic State of Iraq and the Levant", "state:iraq"),
+])
+def test_another_groups_name_containing_a_registered_one_is_a_visible_occurrence(
+    text, actor_id
+):
+    from core.registry import actor_profiles
+
+    # Named limit: these are separate groups the registry does not hold. A
+    # mention is an occurrence of the shorter name, not an identification of
+    # the group the passage is about.
+    assert [
+        item.actor_id for item in _mentions(text, *actor_profiles())
+    ] == [actor_id]
+
+
+@pytest.mark.parametrize("text, actor_id, alias, mode, after", [
+    ("고객 대만족", "state:taiwan", "대만", MATCH_MODE_LEADING_GUARDED, True),
+    ("카타르시스를 느꼈다", "state:qatar", "카타르", MATCH_MODE_LEADING_GUARDED, True),
+    ("シリアル番号", "state:syria", "シリア", MATCH_MODE_UNGUARDED, True),
+])
+def test_a_short_name_kept_as_the_only_one_in_its_script_can_match_other_words(
+    text, actor_id, alias, mode, after
+):
+    from core.registry import actor_profiles
+
+    # Named limit: each is the actor's only name in its script, so it is kept,
+    # and the guard its script allows cannot see the end of a longer word. The
+    # mention records the word character beside it.
+    [mention] = _mentions(text, *actor_profiles())
+
+    assert (mention.actor_id, mention.actual, mention.match_mode) == (
+        actor_id, alias, mode,
+    )
+    assert mention.word_character_after is after
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("US strikes on the port", [("state:us", "US")]),
+    ("talks between the US and Iran", [("state:us", "US"), ("state:iran", "Iran")]),
+    ("Let us talk", []),
+    ("Us and them", []),
+    ("USA said today", [("state:us", "USA")]),
+])
+def test_bare_us_is_the_united_states_only_in_upper_case(text, expected):
+    from core.registry import actor_profiles
+
+    # "US" is case-sensitive: the pronoun never matches, and the word guard
+    # keeps it out of "USA", which is its own alias. Text written wholly in
+    # capitals would read as the United States; neither ledger holds any.
+    assert [
+        (item.actor_id, item.actual) for item in _mentions(text, *actor_profiles())
+    ] == expected

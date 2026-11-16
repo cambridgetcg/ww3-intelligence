@@ -58,10 +58,10 @@ or calls the model boundary.
    bounded JSON-safe view. It must not infer significance, category, credibility,
    confirmation, actors, escalation, impact, scenarios, or probability.
 5. `registry/sources.json` records source role, delivery, publisher/control
-   lineage, authority scope, and caveats. `registry/actors.json` records identity
-   and aliases. Roles such as `institutional-publication` and `automated-alert`
-   describe records, not their truth or credibility. Neither registry may
-   contain analytical scores or motivations.
+   lineage, authority scope, and caveats. `registry/actors.json` records identity,
+   a kind from a closed set, and aliases. Roles such as `institutional-publication`
+   and `automated-alert` describe records, not their truth or credibility.
+   Neither registry may contain analytical scores or motivations.
 6. A first-party publication or enactment can establish what was published or
    enacted in the cited scope; it does not establish the truth of all embedded
    claims. Publisher diversity is not independent corroboration. Actor mention
@@ -240,9 +240,12 @@ print publisher text from them.
   of independence — independent reporting of one event, and a translation of
   one wire story, both share few tokens.
 - Sources registered beyond the original English set ship
-  `collection_enabled: false` and say so in their own caveat: no endpoint here
-  has been fetched, so none is confirmed to exist or to serve what its entry
-  claims. A human verifies a feed and its canonical hosts before enabling it,
+  `collection_enabled: false` and say so in their own caveat. The 0.1.3
+  endpoints still marked unverified were never fetched here, so none is
+  confirmed to exist or to serve what its entry claims; NHK's feed (0.1.5) was
+  checked but is held by its terms; the official feeds surveyed on 2026-11-09 (0.1.10)
+  were fetched and parsed, or say why not, but their publishers' terms were
+  not reviewed. A human verifies a feed and its canonical hosts before enabling it,
   and `ingestion/` has not been exercised against a non-UTF-8 or non-English
   response.
 - Actor aliases now carry native-script forms, so a mention can be seen in

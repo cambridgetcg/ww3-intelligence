@@ -25,6 +25,14 @@ CONTENT_ROLES = {
     "automated-alert", "newsroom-report", "wire", "aggregator", "archive",
 }
 DELIVERIES = {"rss", "geojson-api", "json-api", "search-api"}
+# A kind names a class of identity, not a standing, a legitimacy or a measure
+# of power. registry/README.md says what each one means, and a test keeps the
+# two lists in step.
+ACTOR_KINDS = {
+    "state", "government-body", "international-organization", "alliance",
+    "central-bank", "newsroom", "alert-system", "foundation", "company",
+    "think-tank", "person", "armed-movement",
+}
 _FORBIDDEN_FIELDS = {
     "credibility", "credibility_score", "intent", "motivation", "power_score",
     "reliability", "reliability_score", "truth", "truth_score",
@@ -238,6 +246,9 @@ def actor_profiles() -> tuple[ActorProfile, ...]:
         if actor_id in ids:
             raise RuntimeError(f"duplicate actor id: {actor_id}")
         ids.add(actor_id)
+        kind = _text(raw.get("kind"), f"{path}.kind", 100)
+        if kind not in ACTOR_KINDS:
+            raise RuntimeError(f"unsupported actor kind: {actor_id}")
         raw_aliases = raw.get("aliases")
         if not isinstance(raw_aliases, list) or len(raw_aliases) > 50:
             raise RuntimeError(f"invalid aliases: {path}")
@@ -271,7 +282,7 @@ def actor_profiles() -> tuple[ActorProfile, ...]:
         output.append(ActorProfile(
             actor_id=actor_id,
             canonical_name=_text(raw.get("canonical_name"), f"{path}.canonical_name", 200),
-            kind=_text(raw.get("kind"), f"{path}.kind", 100),
+            kind=kind,
             aliases=profile_aliases,
             alias_forms=expand_alias_forms(profile_aliases),
         ))
@@ -436,8 +447,8 @@ def registry_artifact_sha256() -> dict[str, str]:
 
 
 __all__ = [
-    "ACTOR_CONTRACT", "ALIAS_FORMS", "ALIAS_FORM_AS_REGISTERED", "ALIAS_FORM_NFC",
-    "ALIAS_FORM_NFD", "SOURCE_CONTRACT", "SOURCE_IDENTITY_CONTRACT", "MAX_ACTORS",
+    "ACTOR_CONTRACT", "ACTOR_KINDS", "ALIAS_FORMS", "ALIAS_FORM_AS_REGISTERED",
+    "ALIAS_FORM_NFC", "ALIAS_FORM_NFD", "SOURCE_CONTRACT", "SOURCE_IDENTITY_CONTRACT", "MAX_ACTORS",
     "MAX_REGISTRY_BYTES", "MAX_SOURCES", "ActorProfile", "AliasForm", "SourceProfile",
     "actor_profiles", "alias_identity_key", "expand_alias_forms", "get_actor_profile",
     "get_source_profile", "registry_payload", "registry_artifact_sha256",
