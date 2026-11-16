@@ -422,12 +422,17 @@ what their entries claim. Since 0.1.10 the registry also holds 47 official
 feeds surveyed on 2026-11-09 (offices of government, ministries, central banks,
 international bodies, and company, foundation, think-tank and personal
 channels), each fetched with the collector's own code and registered disabled
-until a person checks the publisher's terms and enables it. Actor aliases carry native-script forms and are
-matched under the guard each script can bear, so a mention is visible in text
-where it previously could not be seen — but a registered alias is only ever
-visibility, never power, and no live-verified official China adapter or
-multilingual local-reporting layer is collecting yet. Assessment validation checks exact lineage and
-contract structure; it cannot establish that an assessor chose the correct
+until a person checks the publisher's terms and enables it. Since 0.1.13 the
+actor registry also names 16 more states and polities, the Palestinian
+Authority, and four armed movements (Hamas, Hezbollah, Ansar Allah and the
+Taliban), each under a kind from a closed set. Actor aliases carry
+native-script forms and are matched under the guard each script can bear, so a
+mention is visible in text where it previously could not be seen — but a
+registered alias is only ever visibility, never power, and no live-verified
+official China adapter or multilingual local-reporting layer is collecting yet.
+A name the registry does not hold, such as most Turkish or German names of
+other countries or the adjective "Houthi", is not seen at all. Assessment
+validation checks exact lineage and contract structure; it cannot establish that an assessor chose the correct
 subject actor, claim kind, evidence effect, power description, or intent
 rationale.
 

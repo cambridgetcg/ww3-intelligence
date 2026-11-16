@@ -10,8 +10,9 @@ This is a local evidence-first geopolitical monitoring prototype. Read
 - Pure source views come from `core/projections.py`. Do not add inferred risk,
   credibility, significance, confirmation, or probability to that contract.
 - `registry/sources.json` describes delivery, publisher/control lineage, roles,
-  authority scope, and caveats; `registry/actors.json` describes identity and
-  aliases. Never add truth, reliability, power, motivation, or intent scores.
+  authority scope, and caveats; `registry/actors.json` describes identity, a
+  kind from a closed set, and aliases. Never add truth, reliability, power,
+  motivation, or intent scores.
 - Source roles include `institutional-publication` and `automated-alert`; they
   describe the record type, not truth or credibility. New adapters keep the
   legacy `source_confidence` field at `not-assessed`; never interpret it as

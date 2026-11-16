@@ -1,5 +1,88 @@
 # Changelog
 
+## 0.1.13 — 2026-11-16
+
+- Register 21 actors the registry lacked. A count of the Actions ledger on
+  2026-11-16 found no registered actor for several states and armed movements
+  at the centre of the conflicts it follows. Each state and movement added here
+  is named, as a whole word, in the titles or summaries of at least 12 of that
+  ledger's records, and the Palestinian Authority in 2:
+  - 16 states and polities: Taiwan, Pakistan, Syria, South Korea, Poland,
+    Belarus, Venezuela, Qatar, Egypt, Iraq, Lebanon, Yemen, Palestine,
+    Afghanistan, Azerbaijan and Armenia;
+  - the Palestinian Authority, a government body;
+  - four armed movements: Hamas, Hezbollah, Ansar Allah (the Houthis) and the
+    Taliban.
+- Actor kinds are now a closed set that the registry loader checks, as it
+  already checks a source's content role and delivery, and `registry/README.md`
+  says what each kind means. One kind is new, `armed-movement`: no existing
+  kind describes these four movements without claiming something about them,
+  and `government-body` would make Hezbollah an office of a government and the
+  others the government of what they hold. The kind takes no position on a
+  movement's legitimacy, on any government's designation of it, or on
+  authority it holds over territory or people. The Taliban, which holds power
+  in Afghanistan, keeps it.
+- Taiwan and Palestine are registered with kind `state`, under the names most
+  English-language reporting uses. Here the kind is the identity class of a
+  polity with its own government. It is not a position on sovereignty,
+  recognition or membership of the United Nations.
+- Aliases follow the existing entries. A state carries its English name, its
+  official long name, "<demonym> government", its name in its own language,
+  and its names in Russian, Ukrainian, Chinese, Japanese, Korean, Arabic,
+  Persian and Hebrew where a form is unambiguous. Palestine carries no
+  "Palestinian government", which could mean the Palestinian Authority or the
+  authority in Gaza. A movement or body carries its English and own-language
+  names. As before, no bare demonym or adjective is an alias, so "Houthi"
+  alone is not; 166 records in the Actions ledger name the movement only that
+  way. A short form that is also a common word, or
+  names a wider area, is left out for a qualified form, as Al Jazeera already
+  carries `قناة الجزيرة` and not the bare `الجزيرة`: Arabic `مصر` (also
+  "insistent"), `قطر` ("diameter") and `حماس` ("enthusiasm"); `طالبان`, which
+  in Arabic is also "two students"; Persian `یمن` ("good fortune") and
+  `آذربایجان` (also two Iranian provinces); Korean `한국` (Korea as a whole)
+  and `남한`. Russian `Катар` and Polish `Polska` match only capitalised,
+  because in lower case they are "catarrh" and the adjective "Polish".
+- Afghanistan carries no long name: "Islamic Republic" and "Islamic Emirate"
+  each take a side on who governs it. "Islamic Emirate of Afghanistan", the
+  Taliban's name for its own government, is an alias of the Taliban.
+- The long names of China and North Korea gain a twin with the typographic
+  apostrophe (`People’s`). Every occurrence of either in the Actions ledger
+  uses it (90 and 6), so the straight form never matched: China's long name
+  was seen only as "China" inside it, and North Korea's not at all. Without
+  the twin, the new alias "Republic of Korea", the name the UN and the IAEA
+  use for the South, would have read the North's long name as the South (6
+  spans in 5 records). Taiwan does not carry "Republic of China", which would
+  read any other spelling of the PRC's long name as Taiwan.
+- Measured with the casefile's own passage builder and scanner on copies of
+  both ledgers:
+  - Actions ledger, 19,627 records: 1,959 now name a different set of actors.
+    1,957 gain at least one new actor, with 3,534 spans, all
+    word-boundary-guarded. North Korea appears in 2 records that named it only
+    by its long name, and China's 90 long names are now one span each rather
+    than "China" inside them. No span moves from an existing actor to a new
+    one, and no scan reaches a limit.
+  - Fly-era ledger, 12,226 records: 1,295 change, and 1,293 gain a new actor,
+    with 1,973 spans. North Korea gains 2 records and China 30 longer spans.
+    No span moves.
+- Two other groups' names contain one registered here: Kataib Hezbollah, a
+  separate Iraqi group (2 records), and the Pakistani Taliban (3). Each counts
+  as a visible occurrence of the shorter name, as any mention does.
+- Not changed: a Turkish or German name of a state that differs from the
+  English is not an alias, apart from each country's own name (`Türkiye`,
+  `Deutschland`), so the two non-English feeds collected show fewer mentions
+  than they hold. In the Actions ledger, Turkish names of the 14 states
+  registered before this release would add an actor to 64 of the Turkish
+  ministry's 222 records, and German names to 13 of the Federal Foreign
+  Office's 20. Turkish `İran` already matches "Iran", because a
+  case-insensitive match reads `İ` as `i`.
+
+**Upgrading:** the casefile fingerprint binds the bytes of both registries,
+so an assessment written against a casefile built before this release fails
+`validate-assessment` with a fingerprint mismatch, as after any registry
+change. Rebuild the casefile and check the assessment again. A consumer that
+reads an actor's `kind` will meet a new value, `armed-movement`, and a
+registry file with a kind outside the set no longer loads.
+
 ## 0.1.11 — 2026-11-13
 
 Small fixes from a review of how collected records are processed. None of them

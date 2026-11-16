@@ -58,10 +58,10 @@ or calls the model boundary.
    bounded JSON-safe view. It must not infer significance, category, credibility,
    confirmation, actors, escalation, impact, scenarios, or probability.
 5. `registry/sources.json` records source role, delivery, publisher/control
-   lineage, authority scope, and caveats. `registry/actors.json` records identity
-   and aliases. Roles such as `institutional-publication` and `automated-alert`
-   describe records, not their truth or credibility. Neither registry may
-   contain analytical scores or motivations.
+   lineage, authority scope, and caveats. `registry/actors.json` records identity,
+   a kind from a closed set, and aliases. Roles such as `institutional-publication`
+   and `automated-alert` describe records, not their truth or credibility.
+   Neither registry may contain analytical scores or motivations.
 6. A first-party publication or enactment can establish what was published or
    enacted in the cited scope; it does not establish the truth of all embedded
    claims. Publisher diversity is not independent corroboration. Actor mention
