@@ -71,6 +71,7 @@ def _adjacency(mention):
     ("ไทย", "รัฐบาลไทยแถลง", 6, MATCH_MODE_UNGUARDED),
     ("China", "China said today", 0, MATCH_MODE_BOUNDARY_GUARDED),
     ("Россия", "Россия заявила", 0, MATCH_MODE_BOUNDARY_GUARDED),
+    ("Հայաստան", "Հայաստան այսօր", 0, MATCH_MODE_BOUNDARY_GUARDED),
 ])
 def test_alias_visibility_holds_across_spaced_and_unspaced_scripts(
     alias, text, start, mode
@@ -87,6 +88,9 @@ def test_alias_visibility_holds_across_spaced_and_unspaced_scripts(
     ("Iran", "Iranian officials spoke"),
     ("China", "Chinatown reopened"),
     ("Иран", "Иранский представитель"),
+    # Armenian is spaced and cased like Cyrillic, so an inflected noun hides
+    # the bare alias in the same way.
+    ("Հայաստան", "Հայաստանի կառավարություն"),
 ])
 def test_spaced_script_aliases_keep_the_guard_that_protects_them(alias, text):
     assert _mentions(text, _profile("state:x", alias)) == []
@@ -434,3 +438,45 @@ def test_shipped_registry_sees_decomposed_native_script_text():
 
         assert mention.alias_form == ALIAS_FORM_NFD
         assert text[mention.start:mention.end] == mention.actual
+
+
+@pytest.mark.parametrize("text, actor_id, actual", [
+    # Before Belarus was registered, the unguarded 俄罗斯 inside it read as
+    # Russia.
+    ("白俄罗斯总统", "state:belarus", "白俄罗斯"),
+    # Without its typographic twin, the North's long name read as the South
+    # through "Republic of Korea".
+    (
+        "the Democratic People’s Republic of Korea said", "state:north-korea",
+        "Democratic People’s Republic of Korea",
+    ),
+    ("the People’s Republic of China said", "state:china", "People’s Republic of China"),
+    ("the Republic of Korea said", "state:south-korea", "Republic of Korea"),
+    (
+        "the Islamic Emirate of Afghanistan said", "org:taliban",
+        "Islamic Emirate of Afghanistan",
+    ),
+])
+def test_shipped_registry_gives_an_overlap_to_the_longer_name(text, actor_id, actual):
+    from core.registry import actor_profiles
+
+    assert [
+        (item.actor_id, item.actual) for item in _mentions(text, *actor_profiles())
+    ] == [(actor_id, actual)]
+
+
+@pytest.mark.parametrize("text, actor_id", [
+    ("Kataib Hezbollah fighters", "org:hezbollah"),
+    ("the Pakistani Taliban said", "org:taliban"),
+])
+def test_another_groups_name_containing_a_registered_one_is_a_visible_occurrence(
+    text, actor_id
+):
+    from core.registry import actor_profiles
+
+    # Named limit: these are separate groups the registry does not hold. A
+    # mention is an occurrence of the shorter name, not an identification of
+    # the group the passage is about.
+    assert [
+        item.actor_id for item in _mentions(text, *actor_profiles())
+    ] == [actor_id]

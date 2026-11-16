@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from cli.commands import cli
 from core.registry import (
     ACTOR_CONTRACT,
+    ACTOR_KINDS,
     ALIAS_FORM_AS_REGISTERED,
     ALIAS_FORM_NFC,
     ALIAS_FORM_NFD,
@@ -21,6 +22,7 @@ from core.registry import (
     source_identity_context,
     source_profiles,
 )
+from core.settings import PROJECT_ROOT
 from core.text_safety import contains_unsafe_controls
 
 
@@ -88,6 +90,18 @@ _NATIVE_SCRIPT_ALIASES = {
     "state:india": ("भारत",),
     "state:germany": ("Deutschland",),
     "state:turkey": ("Türkiye Cumhuriyeti",),
+    "state:taiwan": ("臺灣", "台湾"),
+    "state:south-korea": ("대한민국", "韩国", "韓國"),
+    "state:poland": ("Rzeczpospolita Polska",),
+    "state:venezuela": ("República Bolivariana de Venezuela",),
+    "state:azerbaijan": ("Azərbaycan",),
+    "state:armenia": ("Հայաստան",),
+    "state:pakistan": ("پاکستان",),
+    "state:afghanistan": ("افغانستان",),
+    "state:belarus": ("Беларусь",),
+    "state:syria": ("سوريا",),
+    "org:hamas": ("حركة حماس",),
+    "org:taliban": ("امارت اسلامی افغانستان",),
 }
 
 
@@ -121,12 +135,12 @@ def test_on_disk_registries_load_under_the_shipped_validator():
 
     # Entry and alias totals are a canary: an accidental drop or a duplicated
     # identity changes them before it changes any visible casefile.
-    assert len(actors) == 72
+    assert len(actors) == 93
     assert len(sources) == 74
-    assert sum(len(item.aliases) for item in actors) == 316
+    assert sum(len(item.aliases) for item in actors) == 532
     # Only an alias whose characters decompose gains a second spelling, so the
-    # searchable surface grows by the 45 that do and by nothing else.
-    assert sum(len(item.alias_forms) for item in actors) == 361
+    # searchable surface grows by the 80 that do and by nothing else.
+    assert sum(len(item.alias_forms) for item in actors) == 612
 
 
 def test_registered_rss_sources_replace_dead_endpoints_and_diversify_roles():
@@ -311,7 +325,75 @@ def test_alias_case_sensitivity_and_text_stay_meaningful():
     assert cased["РФ"] is True
     assert cased["НАТО"] is True
     assert cased["Le Monde"] is True
+    # In lower case these are the adjective "Polish" and "catarrh".
+    assert cased["Polska"] is True
+    assert cased["Катар"] is True
     assert cased["中国"] is False
+
+
+def test_every_actor_kind_is_in_the_closed_set_and_documented():
+    readme = (PROJECT_ROOT / "registry" / "README.md").read_text(encoding="utf-8")
+
+    # Every kind in the set is used, so the set names nothing the registry
+    # does not hold, and every kind is explained where a reader looks for it.
+    assert {item.kind for item in actor_profiles()} == ACTOR_KINDS
+    for kind in ACTOR_KINDS:
+        assert f"`{kind}`" in readme, kind
+
+
+def test_contested_polities_and_armed_movements_carry_identity_only():
+    kinds = {item.actor_id: item.kind for item in actor_profiles()}
+
+    # A kind is a class of identity. It is not a finding on sovereignty,
+    # recognition, legitimacy or any government's designation.
+    assert kinds["state:taiwan"] == "state"
+    assert kinds["state:palestine"] == "state"
+    assert kinds["org:palestinian-authority"] == "government-body"
+    for actor_id in ("org:hamas", "org:hezbollah", "org:ansar-allah", "org:taliban"):
+        assert kinds[actor_id] == "armed-movement", actor_id
+
+
+def test_left_out_forms_stay_out_of_the_registry():
+    registered = {
+        alias_identity_key(text)
+        for actor in actor_profiles()
+        for text, _ in actor.aliases
+    }
+
+    for text in (
+        # A bare demonym or adjective is never an alias.
+        "Houthi", "Russian",
+        # Any spelling of the PRC's long name that China's aliases do not cover
+        # would read as Taiwan.
+        "Republic of China",
+        # The referent is ambiguous: the Palestinian Authority, or the
+        # authority in Gaza.
+        "Palestinian government",
+        # Korea as a whole; and a prefix of 남한강 and 남한산성 under the
+        # leading guard.
+        "한국", "남한",
+        # Also "insistent", "diameter", "enthusiasm"; and in Arabic the dual
+        # "two students". Each actor carries a qualified form instead.
+        "مصر", "قطر", "حماس", "طالبان",
+        # A Quranic phrase, and part of other groups' names.
+        "أنصار الله",
+        # Persian "good fortune"; and also two Iranian provinces.
+        "یمن", "آذربایجان",
+    ):
+        assert alias_identity_key(text) not in registered, text
+
+
+def test_a_long_name_with_an_apostrophe_carries_both_apostrophes():
+    actors = {item.actor_id: item for item in actor_profiles()}
+
+    # The matcher reads U+0027 and U+2019 as different characters, and every
+    # occurrence of these names in the collected ledger uses U+2019.
+    for actor_id, name in (
+        ("state:china", "People{}s Republic of China"),
+        ("state:north-korea", "Democratic People{}s Republic of Korea"),
+    ):
+        texts = {text for text, _ in actors[actor_id].aliases}
+        assert {name.format("'"), name.format("\u2019")} <= texts, actor_id
 
 
 def test_registry_rejects_a_native_script_alias_shared_by_two_actors(monkeypatch):
@@ -325,7 +407,8 @@ def test_registry_rejects_a_native_script_alias_shared_by_two_actors(monkeypatch
                 "aliases": [{"text": "中国", "case_sensitive": False}],
             },
             {
-                "actor_id": "org:two", "canonical_name": "Two", "kind": "org",
+                "actor_id": "org:two", "canonical_name": "Two",
+                "kind": "government-body",
                 "aliases": [{"text": "中国", "case_sensitive": True}],
             },
         ],
@@ -377,11 +460,13 @@ def test_registry_rejects_casefold_ambiguous_or_extended_aliases(monkeypatch):
         "contract": ACTOR_CONTRACT,
         "actors": [
             {
-                "actor_id": "org:one", "canonical_name": "One", "kind": "org",
+                "actor_id": "org:one", "canonical_name": "One",
+                "kind": "international-organization",
                 "aliases": [{"text": "UN", "case_sensitive": True}],
             },
             {
-                "actor_id": "org:two", "canonical_name": "Two", "kind": "org",
+                "actor_id": "org:two", "canonical_name": "Two",
+                "kind": "international-organization",
                 "aliases": [{"text": "un", "case_sensitive": False}],
             },
         ],
@@ -465,6 +550,14 @@ def test_case_sensitivity_cannot_excuse_a_spelling_only_difference(monkeypatch):
         _load_actors(monkeypatch, _actor_document(composed, decomposed))
     # Two case-sensitive aliases whose characters actually differ still stand.
     assert len(_load_actors(monkeypatch, _actor_document(composed, other))) == 2
+
+
+def test_registry_rejects_an_actor_kind_outside_the_set(monkeypatch):
+    document = _actor_document({"text": "Example", "case_sensitive": False})
+    document["actors"][0]["kind"] = "militia"
+
+    with pytest.raises(RuntimeError, match="unsupported actor kind"):
+        _load_actors(monkeypatch, document)
 
 
 def test_the_ambiguity_check_sees_every_spelling_the_matcher_will_search():

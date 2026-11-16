@@ -50,6 +50,43 @@ only a collector-supplied capture/parse hint. New RSS, USGS, and GDACS adapters
 set it to `not-assessed`. It is not factual confidence, source credibility,
 corroboration, or truth.
 
+## Actor kinds and aliases
+
+An actor's `kind` is one of a closed set that `core/registry.py` checks when it
+loads the registry. A kind names a class of identity. It is not a standing, a
+legitimacy or a measure of power.
+
+- `state`: a polity with its own government, under the name most
+  English-language reporting uses. Taiwan and Palestine are registered this
+  way; the kind is not a position on sovereignty, recognition or membership of
+  the United Nations.
+- `government-body`: an office, ministry, department or administration of a
+  government, such as the Kremlin or the Palestinian Authority.
+- `armed-movement`: a political or religious movement that fields its own armed
+  force, such as Hamas, Hezbollah, Ansar Allah (the Houthis) or the Taliban.
+  The kind takes no position on a movement's legitimacy, on any government's
+  designation of it, or on authority it holds over territory or people.
+- `international-organization`, `alliance`, `central-bank`, `newsroom`,
+  `alert-system`, `foundation`, `company`, `think-tank` and `person`: what
+  their names say.
+
+A new kind changes that set, this list and the test that checks they agree.
+
+An alias is a name the actor is known by, matched as written. A state carries
+its English name, its name in its own language, and its official long name
+where reporting uses one and the name takes no side (Afghanistan carries none).
+Most states also carry "<demonym> government", and their names in Russian,
+Ukrainian, Chinese, Japanese, Korean, Arabic, Persian and Hebrew; a form that
+is ambiguous is left out. Other actors carry their English and own-language
+names. A bare demonym or adjective (Russian, Houthi) is never an alias. A short
+form that is also a common word, or that names a wider area, is left out for a
+qualified one: `قناة الجزيرة`, not `الجزيرة`; `دولة قطر`, not `قطر`; and no
+`한국`, which means Korea as a whole. An alias whose lower-case form is an
+ordinary word is case-sensitive (`Le Monde`, `Polska`). The matcher treats a
+straight and a typographic apostrophe as different characters, so a name with
+an apostrophe is seen in both spellings only if it carries both, as the long
+names of China and North Korea do.
+
 ## Collection roles
 
 RSS profiles with `collection_enabled: true` supply the bounded `ingest news`
