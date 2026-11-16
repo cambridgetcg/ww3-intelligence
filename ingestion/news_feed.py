@@ -1,8 +1,11 @@
+import io
 import json
 import re
+import xml.sax
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
+from xml.parsers.expat import ExpatError, errors as expat_errors
 
 import feedparser
 import requests
@@ -31,6 +34,22 @@ MAX_SEARCH_RESPONSE_BYTES = 5 * 1024 * 1024
 # Media types a feed is served under. A body with entries counts whatever
 # its declared type; one with none is a feed only under one of these.
 _FEED_MEDIA_TYPES = frozenset({"application/xml", "text/xml"})
+
+# The expat errors that mean the document stopped before it was finished: it
+# ran out inside the root element, inside a tag or other token, inside a CDATA
+# section, or partway through a character. A body cut short but framed as
+# complete (a clean chunked end, a Content-Length equal to the cut, a dropped
+# connection with no framing) arrives as one of these, and feedparser's loose
+# parser still returns the entries it saw, the cut one with them.
+_ENDED_EARLY = frozenset(
+    expat_errors.codes[message]
+    for message in (
+        expat_errors.XML_ERROR_NO_ELEMENTS,
+        expat_errors.XML_ERROR_UNCLOSED_TOKEN,
+        expat_errors.XML_ERROR_UNCLOSED_CDATA_SECTION,
+        expat_errors.XML_ERROR_PARTIAL_CHAR,
+    )
+)
 
 _HTTPS_CANONICAL_HOSTS = {
     "iaea_topnews": {"iaea.org", "www.iaea.org"},
@@ -87,6 +106,12 @@ def _is_feed_media_type(content_type: str | None) -> bool:
     )
 
 
+def _shape(response) -> str:
+    """Describe an answer by its declared media type and byte count only."""
+    declared = response.content_type or "no declared type"
+    return f"{declared}, {len(response.body)} bytes"
+
+
 def _not_a_feed(feed, response) -> str | None:
     """Say why an answer with no entries is not an empty feed, or None.
 
@@ -94,8 +119,7 @@ def _not_a_feed(feed, response) -> str | None:
     never from the body: a block page's wording is the publisher's (or its
     firewall's) text, and stays out of the log.
     """
-    declared = response.content_type or "no declared type"
-    shape = f"{declared}, {len(response.body)} bytes"
+    shape = _shape(response)
     if response.content_type is not None and not _is_feed_media_type(
         response.content_type
     ):
@@ -112,6 +136,30 @@ def _not_a_feed(feed, response) -> str | None:
     return None
 
 
+def _ended_early(feed) -> bool:
+    """Say whether feedparser's strict parser stopped because the body ran out.
+
+    The SAX reader keeps the expat error it caught, so its code is compared
+    rather than the message: the code is libexpat's enumerated error number,
+    part of its interface and the same on Python 3.11 and 3.14, while the
+    message is only the wording libexpat gives that number.
+
+    expat stops at its first error, and feedparser then re-reads the whole
+    document with its loose parser, which does not say where it ended. So a
+    document whose strict parse failed earlier for another reason (for
+    example a bare ``&`` in a title, an undefined entity such as ``&nbsp;``,
+    an undeclared prefix, whitespace before the XML declaration, a
+    mismatched end tag, or a DOCTYPE that feedparser's own rewriting breaks)
+    and is also cut short reports that first error, not the cut, and is
+    still accepted.
+    """
+    exception = feed.get("bozo_exception")
+    if not feed.get("bozo") or not isinstance(exception, xml.sax.SAXParseException):
+        return False
+    expat_error = exception.getException()
+    return isinstance(expat_error, ExpatError) and expat_error.code in _ENDED_EARLY
+
+
 def fetch_rss_feed(
     url: str,
     source: str,
@@ -122,8 +170,9 @@ def fetch_rss_feed(
 
     An empty list means a well-formed feed that listed no items. An answer
     that is not a feed (an HTML page served with status 200, a challenge,
-    a body feedparser cannot read), or one whose every entry is unusable,
-    raises :class:`FetchRefusal` so it counts as a failed fetch.
+    a body feedparser cannot read), one whose document ends before it is
+    finished, or one whose every entry is unusable, raises
+    :class:`FetchRefusal` so it counts as a failed fetch.
     """
     if not 1 <= limit <= MAX_FEED_ENTRIES:
         raise ValueError(f"feed entry limit must be between 1 and {MAX_FEED_ENTRIES}")
@@ -135,13 +184,25 @@ def fetch_rss_feed(
         headers={"User-Agent": "ww3-intelligence/observation-ledger"},
         timeout=(3.05, 15),
     )
-    feed = feedparser.parse(response.body)
+    # feedparser tries to open() bytes as a file name before it reads them as
+    # a document, so a body that is exactly a path on this machine would be
+    # replaced by that file, read with no byte bound and outside the timeout.
+    # A stream is only read.
+    feed = feedparser.parse(io.BytesIO(response.body))
     entries = feed.entries[:limit]
     if not entries:
         reason = _not_a_feed(feed, response)
         if reason is not None:
             raise FetchRefusal(reason)
         return []
+    if _ended_early(feed):
+        # Nothing from a cut document is stored. Its last entry has lost what
+        # followed the cut, and would be filed as a revision of a known item,
+        # as a record under its link when its guid came after the cut, or as
+        # a record with no id; a cut inside a character can also make
+        # feedparser re-read the whole body in another charset. The feed
+        # counts as failed for this run and is read again on the next.
+        raise FetchRefusal(f"incomplete document: {_shape(response)}")
     results = []
     for entry in entries:
         try:

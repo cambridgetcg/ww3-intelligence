@@ -27,6 +27,29 @@
 #        feeds failed; GDACS may fail alone and leaves a warning. Each source writes its
 #        counts to the job summary and a warning for each failed or empty feed.
 #
+#        Each source's step also has its own time limit: USGS 2 minutes, the news feeds 10,
+#        GDACS 3. A fetch's own timeouts do not bound a whole answer: its total is checked
+#        only between chunks of up to 64 KiB, and only once the headers have arrived, so
+#        an endpoint that keeps sending slowly can hold a step until some limit stops it.
+#        Were that the job's limit, the job would be cancelled before the guard and the
+#        save, and the rows every source captured that run would be lost. A step that
+#        reaches its own limit is failed like any failed source, and the guard and the save
+#        still run. Each step's command replaces its shell (exec), because the runner stops
+#        a step by signalling the shell alone; without exec the collector would run on,
+#        writing to the ledger beside the next source, the guard and the save. A stopped
+#        step leaves no counts or feed warnings, since those are written once every feed
+#        has been read; the runner's timed-out error says what happened. How the runner
+#        fails a timed-out step and how it stops one are read from its source and replayed
+#        locally; no step has reached its limit on a GitHub runner yet. The news feeds'
+#        10 minutes give each of the 11 enabled feeds 54.5 s, less than the 63 s of a feed
+#        that uses each of its own waits once in full: 3 s to connect, 15 s for the answer
+#        to begin, 30 s for the body, and up to 15 s more for the read after the body's
+#        last check, which ends the body or brings the chunk that overruns it. So the
+#        limit is a margin over what has been seen, not a bound. The job's 20 minutes
+#        leave the setup, guard and save about 5 once all three steps have used theirs.
+#        In 100 runs from 11 to 13 November 2026 the slowest took 2 s, 12 s and 20 s, and
+#        the whole job 43 s.
+#
 # The job reads the repository and writes nothing to it (contents: read; the model layer
 # that would write data/stream/ is off here). It installs only the hashed
 # requirements-ingest.lock.
@@ -53,7 +76,7 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       WW3_DISABLE_LLM: "1"
       LEDGER: core/db/ww3.db
@@ -110,25 +133,29 @@ jobs:
           PYEOF
 
       # Each source may fail without stopping the others (continue-on-error); the
-      # last step fails the run for USGS or the news feeds.
+      # last step fails the run for USGS or the news feeds. exec lets a step's time
+      # limit stop the collector itself, not only its shell (see the header).
       - name: Ingest — USGS seismic
         id: usgs
         continue-on-error: true
-        run: python ww3.py ingest usgs --limit 1000
+        timeout-minutes: 2
+        run: exec python ww3.py ingest usgs --limit 1000
 
       - name: Ingest — news feeds
         id: news
         continue-on-error: true
+        timeout-minutes: 10
         # Up to 500 entries from each enabled feed, so every feed is read in full
         # unless one grows past that; a feed that reaches it says so.
-        run: python ww3.py ingest news --limit 500
+        run: exec python ww3.py ingest news --limit 500
 
       - name: Ingest — GDACS alerts
         # After the news feeds, and allowed to fail alone: a slow GDACS answer
         # must not cost a cycle of the other sources.
         id: gdacs
         continue-on-error: true
-        run: python ww3.py ingest gdacs
+        timeout-minutes: 3
+        run: exec python ww3.py ingest gdacs
 
       - name: Check the ledger before saving it
         id: guard

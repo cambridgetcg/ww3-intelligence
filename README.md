@@ -337,6 +337,14 @@ keeps the history.
   counts as that feed failing, and each failed or empty feed is named in a
   warning and in the run's step summary, beside per-feed counts. IAEA items
   keep the time of day their feed states instead of midnight.
+- Each source's step has its own time limit (USGS 2 minutes, the news feeds
+  10, GDACS 3) inside the job's 20. A fetch's timeouts do not bound a whole
+  answer, so an endpoint that keeps sending slowly fails its own step, the way
+  a failed source does, rather than the whole job timing out before the ledger
+  is checked and saved. A step stopped that way names no failed or empty feed
+  and writes no counts; the runner's timed-out error says which step it was.
+  This is read from the runner's source and replayed locally; no step has
+  reached its limit on GitHub yet.
 - `.github/workflows/ww3-export.yml` encrypts a copy of the ledger to the
   archive's keys every Monday, and once a day more when the lab Mac asks.
   Scheduled exports also commit `ledger/status.json`, counts and a digest with
@@ -401,8 +409,10 @@ syndicated reports, retain every repeated fetch or metadata-only change,
 preserve A→B→A as a third occurrence, encrypt the database, anonymize network
 traffic, or impose a
 universal memory/wall-clock bound. HTTP reads are capped and timed; parsers
-still materialize each bounded response. Feed failures are reported by source
-and are not evidence that no event occurred.
+still materialize each bounded response. A feed document that ends before it
+is finished is a failed fetch, unless feedparser's strict parser had already
+stopped at an earlier fault, in which case it is read as before. Feed failures
+are reported by source and are not evidence that no event occurred.
 
 The active source registry is finite, hand-curated, and mostly English: since
 0.1.5 the German and Turkish foreign ministries' own feeds collect too, and the
@@ -434,3 +444,12 @@ Historical SQLite files and JSONL state are ignored by Git and are not rewritten
 by tests. Existing derived Events remain available. Older failed model runs are
 not deleted or retried by collection. Historical invented geopolitical seed
 scripts and reports are deliberately excluded from the public source tree.
+
+A local SQLite file that an earlier version opened may fail
+`PRAGMA integrity_check` on `observation_supersedes_id` or
+`prediction_analysis_run_id`, if its observation table predates revision links
+or its prediction table held rows written before forecast provenance
+(2026-07-26).
+`REINDEX observation_supersedes_id; REINDEX prediction_analysis_run_id;`
+repairs it without changing any row. It changes the file's bytes, so repair a
+copy of an archived database, never the archived file.

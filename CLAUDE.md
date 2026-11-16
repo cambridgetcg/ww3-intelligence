@@ -51,7 +51,9 @@ or calls the model boundary.
 2. `core/observations.py` normalizes and appends source records.
 3. Observation content/provenance is immutable and deduplicated by a
    deterministic source-record/content-revision SHA-256 key. Distinct content
-   revisions are linked with `supersedes`.
+   revisions are linked with `supersedes`. Triggers refuse UPDATE, DELETE and
+   any insert that collides with a stored row on id or dedupe key, so REPLACE,
+   IGNORE and DO NOTHING fail loudly too.
 4. `core/projections.py` reads only stored Observations and returns a versioned,
    bounded JSON-safe view. It must not infer significance, category, credibility,
    confirmation, actors, escalation, impact, scenarios, or probability.
@@ -146,7 +148,9 @@ changes materially.
 - `core/projections.py` — pure versioned source view
 - `core/registry.py` — strict claimed-source and actor identity-registry loader
 - `core/pipeline.py` — explicit model analysis leases and atomic persistence
-- `core/db/__init__.py` — schema, additive migration, integrity/permission gates
+- `core/db/__init__.py` — schema, additive migration (tables, then added
+  columns, then indexes: SQLite indexes a column that does not exist yet as its
+  quoted name), integrity/permission gates
 - `analysis/claude_cli.py` — fail-closed local Claude boundary
 - `analysis/schema.py` — strict model-output validation
 - `ingestion/` — bounded RSS/Brave, USGS, and GDACS adapters
@@ -267,6 +271,13 @@ print publisher text from them.
   or A→B→A occurrence.
 - Per-response byte caps and per-run record caps are not a universal resource
   sandbox; feed parsers materialize each bounded response.
+- A feed cut short is refused only when feedparser's strict parser stopped at
+  the cut. That parser stops at its first error and feedparser then re-reads
+  the whole document with its loose parser, so a document whose strict parse
+  already failed earlier (for example a bare `&`, an undefined entity such as
+  `&nbsp;`, an undeclared prefix, whitespace before `<?xml`, a mismatched end
+  tag, a DOCTYPE that feedparser's rewriting breaks) and is also cut short is
+  stored as before.
 - Historical Events may lack Observation lineage; existing failed runs remain
   historical and collection does not retry them.
 - The public documentation is a reviewed copy served from cambridgetcg.github.io;
@@ -281,11 +292,17 @@ print publisher text from them.
   repository activity. The weekly status commit and the lab's `watch`
   re-enabling a disabled workflow are the guards; whether a `GITHUB_TOKEN` push
   counts as activity is not documented.
-- Per-feed failures, including answers that are not feeds, are reported in each
-  ingest run's warnings and step summary, and per-source staleness in the lab's
-  `watch`; none of it is alerted on. One failing source does not stop the
-  others — a publisher changing its feed URL must not cost the rest a cycle — so
-  a source can stop being collected while every other source keeps arriving.
+- Per-feed failures, including answers that are not feeds and feed documents
+  that end before they are finished, are reported in each ingest run's
+  warnings and step summary, and per-source staleness in the lab's `watch`;
+  none of it is alerted on. A step stopped at its time limit (USGS 2 minutes,
+  the news feeds 10, GDACS 3) reports neither; the runner's timed-out error and
+  the run's failure or GDACS warning are what show, as read from the runner's
+  source (no step has reached its limit on GitHub yet). One failing source does
+  not stop the others — a publisher changing its feed URL must not cost the
+  rest a cycle — so a source can stop being collected while every other source
+  keeps arriving. Within the news step, a feed slow enough to reach the limit
+  still costs the feeds read after it that run.
 - The RhetorLint bridge runs a sibling checkout, not a pinned release artifact,
   so upgrading that checkout changes this system's rhetoric output with no
   change here. The engine and rule hashes are recorded per run, which makes the

@@ -3,6 +3,8 @@ import io
 import json
 import os
 import queue
+from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -21,8 +23,10 @@ from cli.feed import (
     observation_watcher_thread,
     render_observation_card,
 )
+from core.collector import RecordDelivery, read_collector_status
 from core.db import AnalysisRun, Event, Observation
 from core.observations import get_or_create_observation
+from ingestion import news_feed
 
 
 def _leaf(
@@ -335,6 +339,116 @@ def test_gdacs_watcher_is_bounded_and_collection_only():
 
     fetch.assert_called_once_with(limit=50)
     process.assert_called_once_with(leaves)
+
+
+# The watcher tests above replace the wrapper with a MagicMock, which answers
+# every attribute read, and the direct wrapper tests ignore what it returns, so
+# a wrapper that captured the batch and then dropped it never failed there.
+# These drive the real wrapper and the real capture, and replace only the fetch
+# that would reach a publisher.
+
+
+@contextmanager
+def _collection_only():
+    """Fail on a model import by dotted name, a stream write, or subprocess.run."""
+    model_modules = {"core.pipeline", "analysis.llm_processor", "analysis.claude_cli"}
+    imported = []
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        imported.append(name)
+        if name in model_modules:
+            raise AssertionError(f"collection attempted model import: {name}")
+        return real_import(name, *args, **kwargs)
+
+    with patch("core.stream.StreamWriter.write") as stream_write, \
+         patch("subprocess.run") as subprocess_run, \
+         patch.object(builtins, "__import__", side_effect=guarded_import):
+        yield
+
+    # The watcher loop catches every exception, so a refused import surfaces
+    # as a failed cycle there and as a recorded name here.
+    assert not (model_modules & set(imported))
+    stream_write.assert_not_called()
+    subprocess_run.assert_not_called()
+
+
+def _assert_cycle_captured(capsys, served: dict[str, int], heartbeat_keys: set[str]):
+    """Check one cycle stored, logged and recorded every batch it was served."""
+    out, err = capsys.readouterr()
+    stored = Counter(observation.source for observation in Observation.select())
+    status = read_collector_status()
+
+    assert dict(stored) == served
+    for source, count in served.items():
+        assert (
+            f"[collector:{source}] received={count} new={count} "
+            "known=0 revision=0 invalid=0"
+        ) in out
+    assert "cycle failed" not in err
+    assert status.file_state == "present"
+    assert set(status.last_success) == heartbeat_keys
+    # A counted cycle that parsed records leaves a delivery stamped with the
+    # same moment as its success; an uncounted one leaves no delivery at all.
+    assert status.deliveries == {
+        key: RecordDelivery(
+            last_records_at=status.last_success[key],
+            no_record_cycles=0,
+        )
+        for key in heartbeat_keys
+    }
+    assert AnalysisRun.select().count() == 0
+    assert Event.select().count() == 0
+    assert not Path(os.environ["WW3_STREAM_PATH"]).exists()
+
+
+def test_news_watch_cycle_captures_every_answering_feed(capsys):
+    feeds = list(news_feed.RSS_FEEDS)
+    served: dict[str, int] = {}
+
+    def answer(_url, source, *, limit):
+        records = [
+            _leaf(source=source, source_record_id=f"{source}-{index}")
+            for index in range(min(2, limit))
+        ]
+        served[source] = len(records)
+        return records
+
+    assert len(feeds) >= 2
+    with _collection_only(), \
+         patch("ingestion.news_feed.fetch_rss_feed", side_effect=answer) as fetch:
+        ingest_thread_news(_OneCycleStop(), interval=0)
+
+    assert [call.args[1] for call in fetch.call_args_list] == feeds
+    assert set(served) == set(feeds)
+    assert all(count > 0 for count in served.values())
+    _assert_cycle_captured(capsys, served, {*feeds, "news"})
+
+
+def test_usgs_watch_cycle_records_its_capture_and_count(capsys):
+    leaves = [
+        _leaf(source="usgs", source_record_id=f"usgs-{index}", type="seismic")
+        for index in range(3)
+    ]
+
+    with _collection_only(), \
+         patch("ingestion.seismic_feed.fetch_seismic_events", return_value=leaves):
+        ingest_thread_usgs(_OneCycleStop(), interval=0)
+
+    _assert_cycle_captured(capsys, {"usgs": 3}, {"usgs"})
+
+
+def test_gdacs_watch_cycle_records_its_capture_and_count(capsys):
+    leaves = [
+        _leaf(source="gdacs", source_record_id=f"gdacs-{index}", type="hazard")
+        for index in range(2)
+    ]
+
+    with _collection_only(), \
+         patch("ingestion.gdacs_feed.fetch_gdacs_events", return_value=leaves):
+        ingest_thread_gdacs(_OneCycleStop(), interval=0)
+
+    _assert_cycle_captured(capsys, {"gdacs": 2}, {"gdacs"})
 
 
 def test_cli_feed_watch_delegates_collection_only_without_cli_db_init():
