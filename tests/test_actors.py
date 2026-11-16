@@ -508,3 +508,21 @@ def test_a_short_name_kept_as_the_only_one_in_its_script_can_match_other_words(
         actor_id, alias, mode,
     )
     assert mention.word_character_after is after
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("US strikes on the port", [("state:us", "US")]),
+    ("talks between the US and Iran", [("state:us", "US"), ("state:iran", "Iran")]),
+    ("Let us talk", []),
+    ("Us and them", []),
+    ("USA said today", [("state:us", "USA")]),
+])
+def test_bare_us_is_the_united_states_only_in_upper_case(text, expected):
+    from core.registry import actor_profiles
+
+    # "US" is case-sensitive: the pronoun never matches, and the word guard
+    # keeps it out of "USA", which is its own alias. Text written wholly in
+    # capitals would read as the United States; neither ledger holds any.
+    assert [
+        (item.actor_id, item.actual) for item in _mentions(text, *actor_profiles())
+    ] == expected

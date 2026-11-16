@@ -75,6 +75,15 @@
   carry.
 - Azerbaijan's Hebrew name is written with a geresh. It is carried twice, with
   the geresh (U+05F3) and with U+0027, the two characters text uses for it.
+- The United States gains the case-sensitive alias "US". Its other English
+  aliases ("United States", "U.S.", "USA") appear in the titles or summaries
+  of 108 of the Actions ledger's 12,174 newest news records, while 2,074 name
+  it only as a bare "US" (1,287 in the Fly-era ledger), so the most-named
+  state was nearly invisible. Upper case is required, so the pronoun "us" does
+  not match, and the guard still keeps "US" out of "USA". Neither ledger holds
+  a title or summary in mostly upper-case letters, where "US" could be the
+  pronoun, nor a "US$"; text written in capitals would read as the United
+  States.
 - Measured with the casefile's own passage builder and scanner on copies of
   both ledgers:
   - Actions ledger, 19,627 records: 1,959 now name a different set of actors.

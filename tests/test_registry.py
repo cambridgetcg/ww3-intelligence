@@ -137,10 +137,10 @@ def test_on_disk_registries_load_under_the_shipped_validator():
     # identity changes them before it changes any visible casefile.
     assert len(actors) == 93
     assert len(sources) == 74
-    assert sum(len(item.aliases) for item in actors) == 537
+    assert sum(len(item.aliases) for item in actors) == 538
     # Only an alias whose characters decompose gains a second spelling, so the
     # searchable surface grows by the 80 that do and by nothing else.
-    assert sum(len(item.alias_forms) for item in actors) == 617
+    assert sum(len(item.alias_forms) for item in actors) == 618
 
 
 def test_registered_rss_sources_replace_dead_endpoints_and_diversify_roles():
