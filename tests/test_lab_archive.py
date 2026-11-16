@@ -72,8 +72,19 @@ def keyring():
         shutil.rmtree(home, ignore_errors=True)
 
 
+def gh_failure(stderr: bytes) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.CompletedProcess(["gh"], 1, b"", stderr)
+
+
+# What gh api printed on 2026-11-16 for a run it had just named.
+NOT_FOUND = gh_failure(b"gh: Not Found (HTTP 404)\n")
+
+
 class FakeGh:
-    """Answers gh calls from a table; anything unlisted fails like a 404."""
+    """Answers gh calls from a table; anything unlisted fails like a 404.
+
+    An answer may also be a finished gh process, to fail a listed call.
+    """
 
     def __init__(self, remaining: int = 4000):
         self.routes: dict[str, object] = {}
@@ -91,10 +102,12 @@ class FakeGh:
         call = " ".join(argv[1:])
         self.calls.append(call)
         if call not in self.routes:
-            return subprocess.CompletedProcess(argv, 1, b"", b"HTTP 404: Not Found")
+            return NOT_FOUND
         answer = self.routes[call]
         if callable(answer):
             answer = answer()
+        if isinstance(answer, subprocess.CompletedProcess):
+            return answer
         if not isinstance(answer, bytes):
             answer = json.dumps(answer).encode()
         return subprocess.CompletedProcess(argv, 0, answer, b"")
@@ -454,15 +467,25 @@ def test_only_the_newest_restored_copies_are_kept(tmp_path, keyring, monkeypatch
     assert index_of(ctx)["artifacts"]["9001"]["restored"] is None
 
 
+EXPORT_DISPATCH = f"workflow run ww3-export.yml --ref main --repo {REPO}"
+EXPORT_LISTING = (f"api repos/{REPO}/actions/workflows/ww3-export.yml/runs"
+                  "?event=workflow_dispatch&per_page=10")
+NAMED_RUN = 43934161685
+NAMED_RUN_GET = f"api repos/{REPO}/actions/runs/{NAMED_RUN}"
+
+
+def _pull_status(ctx):
+    return json.loads(ctx.archive.status_path.read_text())["subcommands"]["pull"]
+
+
 def test_pull_dispatch_waits_for_the_run_it_started(tmp_path):
     gh = FakeGh()
     clock = Clock()
     run = {"id": 777, "event": "workflow_dispatch", "status": "queued",
            "created_at": "2026-11-09T04:20:30Z"}
-    listing = f"api repos/{REPO}/actions/workflows/ww3-export.yml/runs?event=workflow_dispatch&per_page=10"
-    gh.route(f"workflow run ww3-export.yml --ref main --repo {REPO}", b"")
+    gh.route(EXPORT_DISPATCH, b"")
     # The new run appears only after the first poll, and finishes after the second.
-    gh.route(listing, lambda: {"workflow_runs": [run] if clock.ticks >= 20 else []})
+    gh.route(EXPORT_LISTING, lambda: {"workflow_runs": [run] if clock.ticks >= 20 else []})
 
     def run_state():
         if clock.ticks >= 40:
@@ -474,22 +497,120 @@ def test_pull_dispatch_waits_for_the_run_it_started(tmp_path):
 
     assert lab_archive.run(ctx, ["pull", "--dispatch"]) == 0
 
-    status = json.loads(ctx.archive.status_path.read_text())["subcommands"]["pull"]
+    status = _pull_status(ctx)
     assert (status["dispatched_run"], status["dispatch_conclusion"]) == (777, "success")
+    assert gh.count(EXPORT_LISTING) == 2
 
 
 def test_pull_dispatch_gives_up_after_fifteen_minutes(tmp_path):
     gh = FakeGh()
     clock = Clock()
-    gh.route(f"workflow run ww3-export.yml --ref main --repo {REPO}", b"")
-    gh.route(f"api repos/{REPO}/actions/workflows/ww3-export.yml/runs?event=workflow_dispatch&per_page=10",
-             {"workflow_runs": []})
+    gh.route(EXPORT_DISPATCH, b"")
+    gh.route(EXPORT_LISTING, {"workflow_runs": []})
     ctx = make_ctx(tmp_path, gh, clock=clock)
 
     assert lab_archive.run(ctx, ["pull", "--dispatch"]) == 1
     assert clock.ticks == pytest.approx(15 * 60, abs=lab_archive.DISPATCH_POLL_SECONDS)
     # It still looked for exports already waiting.
     assert gh.count(ARTIFACTS) == 1
+
+
+def test_pull_dispatch_without_a_url_stops_at_once_when_the_listing_fails(tmp_path):
+    # Only the run itself may be not visible yet; a 404 for the workflow's
+    # runs listing is an error, as before.
+    gh = FakeGh()
+    clock = Clock()
+    gh.route(EXPORT_DISPATCH, b"")
+    ctx = make_ctx(tmp_path, gh, clock=clock)
+
+    assert lab_archive.run(ctx, ["pull", "--dispatch"]) == 1
+    assert clock.ticks == 0
+    assert gh.count(EXPORT_LISTING) == 1
+    assert _pull_status(ctx)["problems"][0].startswith("dispatch: gh api ")
+
+
+def test_pull_dispatch_polls_through_a_404_for_the_run_gh_named(tmp_path):
+    # Seen 2026-11-16: gh printed the new run's URL, the first read of that run
+    # answered 404, and the run succeeded 14 s later.
+    gh = FakeGh()
+    clock = Clock()
+    gh.route(EXPORT_DISPATCH, f"https://github.com/{REPO}/actions/runs/{NAMED_RUN}\n".encode())
+    gh.route(NAMED_RUN_GET, lambda: NOT_FOUND if clock.ticks < 20 else {
+        "id": NAMED_RUN, "status": "completed", "conclusion": "success"})
+    ctx = make_ctx(tmp_path, gh, clock=clock)
+
+    assert lab_archive.run(ctx, ["pull", "--dispatch"]) == 0
+
+    status = _pull_status(ctx)
+    assert (status["dispatched_run"], status["dispatch_conclusion"]) == (NAMED_RUN, "success")
+    assert gh.count(NAMED_RUN_GET) == 2
+    assert gh.count("workflow run") == 1
+    assert gh.count(EXPORT_LISTING) == 0
+    log = ctx.archive.log_path.read_text()
+    assert "export-run-not-visible" in log and "export-finished" in log
+    assert "export-dispatch-failed" not in log
+
+
+def test_pull_dispatch_reports_a_named_run_that_never_becomes_visible(tmp_path):
+    gh = FakeGh()
+    clock = Clock()
+    gh.route(EXPORT_DISPATCH, f"https://github.com/{REPO}/actions/runs/{NAMED_RUN}\n".encode())
+    gh.route(NAMED_RUN_GET, NOT_FOUND)
+    ctx = make_ctx(tmp_path, gh, clock=clock)
+
+    assert lab_archive.run(ctx, ["pull", "--dispatch"]) == 1
+
+    assert clock.ticks == pytest.approx(15 * 60, abs=lab_archive.DISPATCH_POLL_SECONDS)
+    status = _pull_status(ctx)
+    assert status["dispatched_run"] is None
+    assert status["problems"][0] == (
+        f"dispatch: the dispatched export run {NAMED_RUN} was never visible in 15 minutes "
+        "(every answer for it was a 404)"
+    )
+    assert gh.count("workflow run") == 1
+    assert gh.count(EXPORT_LISTING) == 0
+    # It still looked for exports already waiting.
+    assert gh.count(ARTIFACTS) == 1
+
+
+@pytest.mark.parametrize("stderr", [
+    b"gh: Server Error (HTTP 500)\n",
+    b"gh: Bad credentials (HTTP 401)\n",
+    b"gh: API rate limit exceeded (HTTP 403)\n",
+    b"error connecting to api.github.com\n",
+])
+def test_pull_dispatch_stops_at_once_on_any_other_error_for_the_named_run(tmp_path, stderr):
+    gh = FakeGh()
+    clock = Clock()
+    gh.route(EXPORT_DISPATCH, f"https://github.com/{REPO}/actions/runs/{NAMED_RUN}\n".encode())
+    gh.route(NAMED_RUN_GET, gh_failure(stderr))
+    ctx = make_ctx(tmp_path, gh, clock=clock)
+
+    assert lab_archive.run(ctx, ["pull", "--dispatch"]) == 1
+
+    assert clock.ticks == 0
+    assert gh.count(NAMED_RUN_GET) == 1
+    problem = _pull_status(ctx)["problems"][0]
+    assert problem == (f"dispatch: gh {NAMED_RUN_GET} failed (1): "
+                       + stderr.decode().strip())
+    assert "export-run-not-visible" not in ctx.archive.log_path.read_text()
+    assert gh.count(ARTIFACTS) == 1
+
+
+@pytest.mark.parametrize("args, stderr, not_found", [
+    (("api", "x"), b"gh: Not Found (HTTP 404)\n", True),
+    (("api", "x"), b"gh: HTTP 404\n", True),
+    (("api", "x"), b"gh: Server Error (HTTP 500)\n", False),
+    (("api", "x"), b"gh: Not Found (HTTP 4040)\n", False),
+    (("api", "x"), b"error connecting to api.github.com\ngh: Not Found (HTTP 404)\n", False),
+    (("workflow", "run"), b"gh: Not Found (HTTP 404)\n", False),
+])
+def test_only_a_gh_api_404_reads_as_not_found(args, stderr, not_found):
+    github = lab_archive.GitHub("gh", REPO, lambda argv: gh_failure(stderr))
+
+    with pytest.raises(lab_archive.ArchiveError) as caught:
+        github._run(*args)
+    assert isinstance(caught.value, lab_archive.NotFound) is not_found
 
 
 # -------------------------------------------------------------------- watch
