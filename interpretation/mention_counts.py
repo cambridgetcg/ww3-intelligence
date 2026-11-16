@@ -33,6 +33,7 @@ evidence that an actor went unnamed.
 from __future__ import annotations
 
 import csv
+import errno
 import hashlib
 import os
 import sqlite3
@@ -110,6 +111,9 @@ SCOPE = (
 _SOURCE_IDENTITY_FILTER = "canonical-host-consistent-only"
 _SELF_MENTION_FILTER = "counted-and-flagged"
 _HASH_CHUNK_BYTES = 1024 * 1024
+# Ids bound per query when reading the selected rows. Well under SQLite's
+# smallest default limit on bound parameters (999).
+_SCAN_CHUNK_ROWS = 500
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -119,6 +123,7 @@ class LedgerReadError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(f"{message} ({code})")
         self.code = code
+        self.message = message
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,14 +155,20 @@ def _refuse_journal(path: Path) -> None:
 
 def resolve_ledger_path(ledger_path: str | os.PathLike) -> Path:
     """Resolve an existing regular ledger file; never create anything."""
+    not_found = LedgerReadError(
+        "ledger_not_found", "No ledger file at that path; nothing was created",
+    )
     try:
         path = Path(ledger_path).expanduser().resolve(strict=True)
         mode = path.stat().st_mode
     except (FileNotFoundError, NotADirectoryError, RuntimeError):
-        raise LedgerReadError(
-            "ledger_not_found", "No ledger file at that path; nothing was created",
-        ) from None
-    except OSError:
+        # Python 3.11 and 3.12 report a symlink loop as RuntimeError.
+        raise not_found from None
+    except OSError as exc:
+        # Python 3.13 and later report it as ELOOP. A loop names no file on
+        # any version, so it is refused the same way.
+        if exc.errno == errno.ELOOP:
+            raise not_found from None
         raise LedgerReadError(
             "ledger_unreadable", "The ledger path could not be examined",
         ) from None
@@ -243,8 +254,9 @@ def _select(connection: sqlite3.Connection, all_revisions: bool) -> dict:
     superseded: set[int] = set()
     fetched = []
     for row_id, source, record_id, created_at, supersedes_id, fetched_at in rows:
-        # A row with no source record id is its own record.
-        key = ("record", source, record_id) if record_id is not None else ("row", row_id)
+        # A row with no source record id is its own record. An empty id is no
+        # id, as in core/observations.py.
+        key = ("record", source, record_id) if record_id else ("row", row_id)
         rank = (created_at if isinstance(created_at, str) else "", row_id)
         current = newest.get(key)
         if current is None or rank > current:
@@ -271,6 +283,21 @@ def _select(connection: sqlite3.Connection, all_revisions: bool) -> dict:
     }
 
 
+def _selected_rows(connection: sqlite3.Connection, selected: set[int]):
+    """Yield the selected rows in id order, reading no other row's text."""
+    # Asking by id keeps a superseded revision's text undecoded, so a row that
+    # is not counted can neither cost the read nor refuse it.
+    ids = sorted(selected)
+    for start in range(0, len(ids), _SCAN_CHUNK_ROWS):
+        chunk = ids[start:start + _SCAN_CHUNK_ROWS]
+        marks = ", ".join("?" * len(chunk))
+        yield from connection.execute(
+            "SELECT id, dedupe_key, source, canonical_url, synthetic, published_at, "
+            f"fetched_at, raw_text FROM observation WHERE id IN ({marks}) ORDER BY id",
+            chunk,
+        )
+
+
 def _scan(connection: sqlite3.Connection, selected: set[int], day_basis: str) -> dict:
     profiles = {profile.source_id: profile for profile in source_profiles()}
     by_status: Counter = Counter(dict.fromkeys(SOURCE_IDENTITY_STATUSES, 0))
@@ -287,16 +314,10 @@ def _scan(connection: sqlite3.Connection, selected: set[int], day_basis: str) ->
     scans_truncated: list[int] = []
     passages_truncated: list[int] = []
 
-    cursor = connection.execute(
-        "SELECT id, dedupe_key, source, canonical_url, synthetic, published_at, "
-        "fetched_at, raw_text FROM observation ORDER BY id"
-    )
     for (
         row_id, dedupe_key, source, canonical_url, synthetic,
         published_at, fetched_at, raw_text,
-    ) in cursor:
-        if row_id not in selected:
-            continue
+    ) in _selected_rows(connection, selected):
         if not isinstance(dedupe_key, str) or not isinstance(raw_text, str):
             raise _unsupported("An observation row holds a dedupe key or text that is not text")
         profile = profiles.get(source) if isinstance(source, str) else None

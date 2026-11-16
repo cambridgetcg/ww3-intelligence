@@ -257,11 +257,27 @@ the registry knows it: a record from an unregistered source is counted, under
 The ledger file is opened read-only and immutable, never through the ledger
 setup that other commands run, so nothing is created, migrated or rewritten
 and no `-wal`, `-shm` or `-journal` file appears beside it. That makes an
-archived database safe to read in place. Two cases are refused: a path that
-does not exist (nothing is created there), and a file with a non-empty `-wal`
-or `-journal` beside it, which an immutable read would ignore. `--csv` writes
-only the file it names, at mode 0600, and refuses a path in the ledger's own
-directory.
+archived database safe to read in place. Each refusal has a stable code, and
+under `--json` the code is all that prints (`{"error": {"code": ...}}`):
+
+- `ledger_not_found`: no file at the path, or a symlink loop. Nothing is
+  created there.
+- `ledger_not_a_file`: the path is a directory or another non-regular file.
+- `ledger_unreadable`: SQLite cannot read the file, or a value this command
+  reads is not valid UTF-8. Only the counted records' text is read, so the
+  text of a superseded revision cannot refuse the default run.
+- `ledger_schema_unsupported`: no `observation` table, a column this command
+  reads is missing, the schema is newer than this code, or a dedupe key or
+  record text is not stored as text.
+- `ledger_has_journal`: a non-empty `-wal` or `-journal` sits beside the file,
+  and an immutable read would ignore it.
+- `ledger_changed_during_read`: the file's size, modification time or inode
+  changed while it was read.
+
+`--csv` writes only the file it names, at mode 0600. It refuses a directory
+that does not exist (`csv_dir_missing`) and a path in the ledger's own
+directory (`csv_beside_ledger`) before anything is counted, and a failed write
+is `csv_write_failed`.
 
 Defaults, each stated in the output's `filters`, `selection`, `source_identity`
 and `day_basis` blocks:

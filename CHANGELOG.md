@@ -31,7 +31,10 @@ casefile reads, and no other command.
   exist (`ledger_not_found`); nothing is created there. The file's size,
   modification time and inode are compared before and after the read, and a
   change refuses the counts. `--csv` writes only the file it names, at mode
-  0600, and refuses a path in the ledger's own directory.
+  0600, and refuses a path in the ledger's own directory. Every refusal,
+  `--csv` ones included, has a stable code, and under `--json` the code is all
+  that prints. Only the counted records' text is read, so a superseded
+  revision's text is never decoded by the default run.
 - Defaults, each stated in the output: only the newest stored revision of each
   source record (`--all-revisions` counts all); the UTC day of `published_at`,
   else of `fetched_at`, with the number that used each (`--day-basis fetched`
@@ -53,9 +56,9 @@ casefile reads, and no other command.
   actor, so `white_house` naming `state:us` is not one. An A→B→A change
   leaves B as the newest stored revision, because the third fetch is not
   stored. Published days reach back before collection began on 2026-09-01:
-  810 rows on that ledger were published earlier. Counts move with the
-  registry, so two outputs compare only when their
-  `registry_artifacts_sha256` match.
+  810 stored rows on that ledger (541 of the counted records) were published
+  earlier. Counts move with the registry, so two outputs compare only when
+  their `registry_artifacts_sha256` match.
 
 ## 0.1.11 — 2026-11-13
 

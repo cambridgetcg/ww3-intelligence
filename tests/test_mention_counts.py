@@ -267,17 +267,20 @@ def test_undated_rows_and_rows_without_a_record_id_are_counted_in_the_selection(
         # Two rows with no source record id are two records, not revisions.
         _hand_row(4, source_record_id=None),
         _hand_row(5, source_record_id=None, dedupe_key="key-5b"),
+        # An empty id is no id, as in core/observations.py.
+        _hand_row(6, source_record_id=""),
+        _hand_row(7, source_record_id="", dedupe_key="key-7b"),
     ])
 
     payload = count_actor_mentions(ledger, now=_NOW)
 
     selection = payload["selection"]
-    assert selection["observations_stored"] == 5
-    assert selection["source_records"] == 5
+    assert selection["observations_stored"] == 7
+    assert selection["source_records"] == 7
     assert selection["revisions_superseded"] == 0
     assert selection["observations_undated"] == 1
-    assert selection["observations_counted"] == 4
-    assert payload["day_basis"] == {"published_at": 3, "fetched_at": 1, "undated": 1}
+    assert selection["observations_counted"] == 6
+    assert payload["day_basis"] == {"published_at": 5, "fetched_at": 1, "undated": 1}
     assert payload["days"] == {"first": "2026-11-01", "last": "2026-11-02", "distinct": 2}
     assert payload["ledger"]["schema_version"] == 0
     assert payload["ledger"]["first_fetched_at"] == "2026-11-01T11:00:00Z"
@@ -322,6 +325,37 @@ def test_revision_links_that_disagree_with_the_chosen_order_are_counted(tmp_path
 
     assert payload["selection"]["revision_link_disagreements"] == 2
     assert payload["selection"]["observations_selected"] == 1
+
+
+def test_a_superseded_revision_s_text_is_not_read_by_default(tmp_path):
+    ledger = _build_hand_ledger(tmp_path / "hand.db", [
+        _hand_row(1, source_record_id="same", raw_text=_Sql("CAST(X'FFFE' AS TEXT)")),
+        _hand_row(2, source_record_id="same", supersedes_id=1),
+    ])
+
+    payload = count_actor_mentions(ledger, now=_NOW)
+    assert payload["selection"]["observations_selected"] == 1
+    assert payload["selection"]["observations_counted"] == 1
+
+    # Counting every revision reads the undecodable text, and is refused.
+    with pytest.raises(LedgerReadError) as caught:
+        count_actor_mentions(ledger, all_revisions=True)
+    assert caught.value.code == "ledger_unreadable"
+
+
+def test_selected_rows_read_in_chunks_give_the_same_counts(tmp_path, monkeypatch):
+    rows = [_hand_row(row_id) for row_id in range(1, 8)]
+    rows.append(_hand_row(8, source_record_id="r7", supersedes_id=7))
+    ledger = _build_hand_ledger(tmp_path / "hand.db", rows)
+    whole = count_actor_mentions(ledger, now=_NOW)
+    every = count_actor_mentions(ledger, all_revisions=True, now=_NOW)
+
+    monkeypatch.setattr(mention_counts, "_SCAN_CHUNK_ROWS", 2)
+
+    assert count_actor_mentions(ledger, now=_NOW) == whole
+    assert count_actor_mentions(ledger, all_revisions=True, now=_NOW) == every
+    assert whole["selection"]["observations_counted"] == 7
+    assert every["selection"]["observations_counted"] == 8
 
 
 # 4. Source identity.
@@ -620,6 +654,22 @@ def test_a_missing_path_is_refused_and_nothing_is_created(tmp_path):
 
     assert not missing.exists()
     assert sorted(os.listdir(tmp_path)) == listing
+
+
+def test_a_symlink_loop_is_refused_as_not_found_on_every_python(tmp_path):
+    # Python 3.11 and 3.12 raise RuntimeError for a loop, 3.13 and later ELOOP.
+    first, second = tmp_path / "a.db", tmp_path / "b.db"
+    first.symlink_to(second)
+    second.symlink_to(first)
+
+    for call in (resolve_ledger_path, count_actor_mentions):
+        with pytest.raises(LedgerReadError) as caught:
+            call(first)
+        assert caught.value.code == "ledger_not_found"
+
+    result = CliRunner().invoke(cli, ["mentions", str(first), "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.output) == {"error": {"code": "ledger_not_found"}}
 
 
 # 12. Other refusals.
@@ -994,6 +1044,53 @@ def test_cli_refusals_exit_with_a_code(tmp_path):
     assert unreadable.exit_code == 1
     assert json.loads(unreadable.output) == {"error": {"code": "ledger_unreadable"}}
     assert not missing.exists()
+
+
+def test_cli_csv_refusals_print_only_a_code_under_json(tmp_path):
+    _observation("un_press", "u1", "China", "Text.")
+    ledger = _ledger_file(tmp_path)
+    linked = tmp_path / "linked"
+    linked.symlink_to(ledger.parent, target_is_directory=True)
+    listing = sorted(os.listdir(ledger.parent))
+    runner = CliRunner()
+
+    def refusal(csv_target):
+        result = runner.invoke(cli, ["mentions", str(ledger), "--json", "--csv", str(csv_target)])
+        assert result.exit_code == 1, result.output
+        return json.loads(result.output)
+
+    assert refusal(ledger.parent / "x.csv") == {"error": {"code": "csv_beside_ledger"}}
+    assert refusal(linked / "x.csv") == {"error": {"code": "csv_beside_ledger"}}
+    assert refusal(ledger) == {"error": {"code": "csv_beside_ledger"}}
+    assert refusal(tmp_path / "nowhere" / "x.csv") == {"error": {"code": "csv_dir_missing"}}
+    assert not (tmp_path / "nowhere").exists()
+    assert sorted(os.listdir(ledger.parent)) == listing
+
+    plain = runner.invoke(cli, ["mentions", str(ledger), "--csv", str(linked / "x.csv")])
+    assert plain.exit_code == 1
+    assert "(csv_beside_ledger)" in plain.output
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores file permissions",
+)
+def test_cli_csv_write_failure_prints_only_a_code_under_json(tmp_path):
+    _observation("un_press", "u1", "China", "Text.")
+    ledger = _ledger_file(tmp_path)
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0o500)
+    try:
+        result = CliRunner().invoke(
+            cli, ["mentions", str(ledger), "--json", "--csv", str(locked / "x.csv")],
+        )
+    finally:
+        os.chmod(locked, 0o700)
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.output) == {"error": {"code": "csv_write_failed"}}
+    assert os.listdir(locked) == []
 
 
 def test_cli_human_view_lists_actors_sources_and_scope(tmp_path):

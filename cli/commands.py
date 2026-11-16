@@ -837,16 +837,17 @@ def mentions(ledger_path, all_revisions, day_basis, csv_path, as_json):
         write_rows_csv,
     )
 
-    def refuse(exc: LedgerReadError):
+    # Every refusal has a stable code, and under --json it is all that prints.
+    def refuse(code: str, message: str):
         if as_json:
-            click.echo(json.dumps({"error": {"code": exc.code}}, sort_keys=True))
+            click.echo(json.dumps({"error": {"code": code}}, sort_keys=True))
             click.get_current_context().exit(1)
-        raise click.ClickException(str(exc))
+        raise click.ClickException(f"{message} ({code})")
 
     try:
         ledger = resolve_ledger_path(ledger_path)
     except LedgerReadError as exc:
-        refuse(exc)
+        refuse(exc.code, exc.message)
 
     # Checked before the scan, so a refusal costs no wait. The resolved target
     # is what gets written, so a link cannot carry the CSV beside the ledger.
@@ -854,10 +855,11 @@ def mentions(ledger_path, all_revisions, day_basis, csv_path, as_json):
     if csv_path is not None:
         csv_target = csv_path.expanduser().resolve()
         if not csv_target.parent.is_dir():
-            raise click.ClickException("The --csv directory does not exist.")
+            refuse("csv_dir_missing", "The --csv directory does not exist")
         if csv_target == ledger or csv_target.parent == ledger.parent:
-            raise click.ClickException(
-                "Refusing to write beside the ledger; choose another directory for --csv."
+            refuse(
+                "csv_beside_ledger",
+                "Refusing to write beside the ledger; choose another directory for --csv",
             )
 
     try:
@@ -867,7 +869,7 @@ def mentions(ledger_path, all_revisions, day_basis, csv_path, as_json):
             day_basis=DAY_BASIS_FETCHED if day_basis == "fetched" else DAY_BASIS_PUBLISHED,
         )
     except LedgerReadError as exc:
-        refuse(exc)
+        refuse(exc.code, exc.message)
 
     written = None
     if csv_target is not None:
@@ -879,9 +881,7 @@ def mentions(ledger_path, all_revisions, day_basis, csv_path, as_json):
                 os.fchmod(handle.fileno(), 0o600)
                 written = write_rows_csv(payload, handle)
         except OSError as exc:
-            raise click.ClickException(
-                f"Could not write the --csv file ({type(exc).__name__})."
-            ) from None
+            refuse("csv_write_failed", f"Could not write the --csv file ({type(exc).__name__})")
 
     if as_json:
         click.echo(json.dumps(payload, ensure_ascii=True, sort_keys=True, allow_nan=False))
