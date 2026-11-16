@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.14 — 2026-11-16
+
+- `pull --dispatch` waits through a 404 for the export run it has just
+  started. On 2026-11-16 `gh workflow run` printed the new run's URL, and the
+  first read of that run answered `gh: Not Found (HTTP 404)`. The run existed
+  and succeeded 14 s later, but the pull logged `export-dispatch-failed` and
+  did not collect that export. The next day's pull collects it, since a pull
+  takes every unexpired export it has not seen. In the seven pulls before, the
+  run was visible at once and `export-finished` was logged about 22 s after
+  the dispatch.
+- A 404 for the run being waited on now means the run is not visible yet. The
+  pull logs `export-run-not-visible` and reads the run again every 20 s, up to
+  the existing 15-minute limit; a run never visible by then is reported as
+  such. Any other error still ends the wait at once, and so does a 404 for any
+  other call, including the runs listing read when `gh` prints no URL. A 404
+  is recognised only as `gh api` reports one, on the first line of its stderr:
+  `gh: <message> (HTTP 404)`, or `gh: HTTP 404` when GitHub sent no message.
+- The lab's jobs run the copy in `~/.local/libexec/ww3`, not this checkout.
+  That copy changes only when `ops/lab/install.sh` is run again, which is the
+  owner's step; until then the daily pull runs the old code.
+
 ## 0.1.11 — 2026-11-13
 
 Small fixes from a review of how collected records are processed. None of them
