@@ -166,7 +166,9 @@ sqlite3 'file:ww3.db?mode=ro' 'SELECT COUNT(*), MAX(id) FROM observation;'
 The digest, the two counts and `ok` must agree with the manifest. To read the
 database with this repository's CLI, copy it and point `DB_PATH` at the copy:
 the CLI may migrate a schema it opens, and an archived file should stay the one
-its manifest describes. Remove `$work` afterwards.
+its manifest describes. `ww3.py mentions` is the exception; it opens the file
+read-only and immutable and can read an archived database in place. Remove
+`$work` afterwards.
 
 There is no path that puts an archived database back into the Actions cache.
 The cache can only be written from inside a workflow run, and nothing here

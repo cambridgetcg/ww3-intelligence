@@ -227,6 +227,65 @@ field. Successful validation establishes structural evidence links, not that a
 claim, power basis, or hypothesis is true. See `spec/assessment.schema.json`
 and `spec/README.md`.
 
+## Mention counts over a whole ledger
+
+A casefile shows at most 100 records. To see which registered actors the
+stored records name across a whole ledger file, per UTC day and per source,
+count them:
+
+```bash
+.venv/bin/python ww3.py mentions LEDGER_PATH
+.venv/bin/python ww3.py mentions LEDGER_PATH --json > counts.json
+.venv/bin/python ww3.py mentions LEDGER_PATH --csv counts.csv
+.venv/bin/python ww3.py mentions LEDGER_PATH --all-revisions --day-basis fetched --json
+```
+
+A row is one UTC day, one source and one registered actor: how many counted
+records from that source on that day name the actor, how many alias spans they
+hold, how many records that source has on that day, and whether the actor is
+the source's own registered publisher. Totals per actor (every registered
+actor, zeros included), per source and per day and source follow. The command
+runs the casefile's own passage builder and mention scanner
+(`ww3.actor-mentions/v3`) on each counted record, so for a record it counts,
+its numbers are the casefile's numbers. No model is called.
+
+The output holds ids, counts, days, hashes and versions. It never holds a
+title, summary, passage or matched span, and a source id is printed only if
+the registry knows it: a record from an unregistered source is counted, under
+`source_id: null`, but its claimed id is not printed.
+
+The ledger file is opened read-only and immutable, never through the ledger
+setup that other commands run, so nothing is created, migrated or rewritten
+and no `-wal`, `-shm` or `-journal` file appears beside it. That makes an
+archived database safe to read in place. Two cases are refused: a path that
+does not exist (nothing is created there), and a file with a non-empty `-wal`
+or `-journal` beside it, which an immutable read would ignore. `--csv` writes
+only the file it names, at mode 0600, and refuses a path in the ledger's own
+directory.
+
+Defaults, each stated in the output's `filters`, `selection`, `source_identity`
+and `day_basis` blocks:
+
+- Only the newest stored revision of each source record is counted.
+  `--all-revisions` counts every stored revision.
+- A record's day is the UTC date of its `published_at`, or of its `fetched_at`
+  when it has none; the output counts how many used each.
+  `--day-basis fetched` uses `fetched_at` for every record.
+- Only records whose canonical URL is HTTPS on a host the registry lists for
+  their source are counted. The others are counted by host status and left out
+  of every row.
+- A mention of the source's own registered publisher actor is counted and
+  flagged (`publisher_self_mention`), so it can be left out.
+- Scan truncation is counted, with the ids of the records it touched.
+
+Mention count does not measure power, responsibility, agreement, importance,
+or intent. Matching is bounded and may be incomplete: an actor at zero matched
+no alias in the counted text, which is not evidence that it was not named, and
+an actor outside the registry is never counted. Counts move with the registry,
+so two outputs compare only when their `registry_artifacts_sha256` match. On
+the 19,627-observation ledger of 2026-11-16, on the lab Mac, the default run
+took about 14 s and 50 MB of memory, and `--all-revisions` about 51 s.
+
 ## Optional model-derived analysis
 
 Model analysis requires two independent choices:
@@ -266,6 +325,7 @@ Observation IDs with `analyze-observation` for the new path.
 | `casefile ...` (without rhetoric) | none | initializes ledger if absent; otherwise reads | never |
 | `rhetoric ID`, `casefile --rhetorlint` | no bridge fetch; configured code is network-unrestricted | ledger init plus unrestricted local code; WW3 stores no annotations | no WW3 model call; configured code unrestricted |
 | `validate-assessment FILE` | none | initializes ledger; assessment is not stored | never |
+| `mentions LEDGER_PATH` | none | none; `--csv` writes the file it names | never |
 | `feed --watch` | USGS/RSS/GDACS HTTP | Observations | never |
 | `analyze-observation ID` | local Claude may contact its provider | AnalysisRun, Event/branches, event JSONL | explicit |
 | `ingest SOURCE --analyze` | feed HTTP plus model provider | Observations and derived analysis | explicit |

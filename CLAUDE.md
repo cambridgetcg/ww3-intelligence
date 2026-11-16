@@ -123,6 +123,13 @@ or calls the model boundary.
 13. Model output must pass `analysis/schema.py`; derived Event/branch writes stay
    in one fenced transaction. One observation cannot confirm itself.
 14. SQLite is canonical. Event JSONL is a model-layer compatibility view.
+15. `interpretation/mention_counts.py` counts registered-actor mentions over one
+   ledger file (`ww3.actor-mention-counts/v1`). It opens the file read-only and
+   immutable, never through `init_db`, and its output holds ids, counts, days,
+   hashes and versions, never publisher text. It reuses the casefile's passage
+   builder and mention scanner, so for the records it counts a number is the
+   casefile's number. Mention count does not measure power, responsibility,
+   agreement, importance, or intent.
 
 ## Data flow
 
@@ -158,6 +165,7 @@ changes materially.
 - `interpretation/casefile.py` — deterministic evidence packets and mention spans
 - `interpretation/rhetorlint.py` — bounded bridge to an exact local reference engine
 - `interpretation/assessment.py` — runtime evidence-link validator
+- `interpretation/mention_counts.py` — counts-only mention report over one ledger file, read-only
 - `spec/assessment.schema.json` — portable `ww3.assessment/v1` shape
 - `cli/feed.py` — optional observation-first terminal feed
 - `dashboard/app.py` — optional observation-first dashboard
@@ -182,6 +190,7 @@ changes materially.
 .venv/bin/python ww3.py rhetoric OBSERVATION_ID --json
 .venv/bin/python ww3.py casefile OBSERVATION_ID... --rhetorlint --json
 .venv/bin/python ww3.py validate-assessment assessment.json --json
+.venv/bin/python ww3.py mentions LEDGER_PATH --json
 .venv/bin/python ww3.py analyze-observation OBSERVATION_ID
 .venv/bin/python ww3.py runs --status failed
 .venv/bin/python ww3.py provenance EVENT_ID
@@ -261,6 +270,10 @@ print publisher text from them.
 - `source_confidence` is legacy collection metadata, not credibility or truth.
 - Registered actor matches are bounded and may be incomplete. They measure
   visible mentions only, not power or intent.
+- Mention counts cover registered actors only and, by default, the newest
+  stored revision of each source record. An actor outside the registry is
+  never counted, an A→B→A change leaves B as the newest stored revision, and
+  only the publisher's own actor id is treated as a self-mention.
 - RhetorLint matches language patterns only; it does not detect truth,
   deception, or motivation.
 - Assessment validation checks lineage and structure, not whether an assessor

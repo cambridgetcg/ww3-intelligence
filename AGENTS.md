@@ -26,6 +26,9 @@ This is a local evidence-first geopolitical monitoring prototype. Read
   power.
 - Actor-alias matching is bounded and may be incomplete. Preserve scan limits,
   truncation metadata, and the casefile completeness status.
+- `ww3.py mentions` reads a ledger file read-only and prints counts and ids
+  only; keep publisher text, matched strings and unregistered source ids out of
+  its output.
 - RhetorLint is an explicit local visible-language annotator only. Its marks
   must never feed truth, deception, credibility, intent, actor attribution, or
   Event inference. Keep `strip` omitted so evidential qualifiers survive. Its
