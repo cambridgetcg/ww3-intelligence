@@ -99,10 +99,11 @@ which is each subcommand's first GitHub call, fails, and `status.json` says so.
    waits for that run: the run `gh` names, or else the first
    `workflow_dispatch` run created after the request (allowing 60 s of clock
    difference), polled about every 20 s for at most 15 minutes. GitHub can
-   name a new run before its API serves it, so a 404 for that run means it is
-   not visible yet and the polling goes on; any other error ends the wait at
-   once. A failed or slow export, or a run never visible in the 15 minutes,
-   is reported, and the pull still collects what is waiting.
+   name a new run before its API serves it, so a 404 for the run `gh` names
+   means it is not visible yet and the polling goes on; any other error,
+   including a 404 for a run found in the listing, ends the wait at once. A
+   failed or slow export, or a run never visible in the 15 minutes, is
+   reported, and the pull still collects what is waiting.
 3. It lists the unexpired `ww3-export-*` artifacts and skips every one already
    in `index.json`.
 4. Provenance: the run that uploaded the artifact must be

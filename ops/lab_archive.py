@@ -361,6 +361,7 @@ def dispatch_export(ctx: Context, ref: str) -> dict[str, Any]:
     # Recent gh prints the new run's URL; older ones print nothing useful.
     match = re.search(r"/actions/runs/(\d+)", said)
     run_id: int | None = int(match.group(1)) if match else None
+    named = run_id is not None
     deadline = ctx.monotonic() + DISPATCH_WAIT.total_seconds()
     seen = False
     while True:
@@ -379,7 +380,10 @@ def dispatch_export(ctx: Context, ref: str) -> dict[str, Any]:
             except NotFound:
                 # GitHub can name a new run before its API serves it: on
                 # 2026-11-16 the run gh named answered 404, then succeeded 14 s
-                # later.  Not visible yet, so poll again.
+                # later.  Not visible yet, so poll again.  A run found in the
+                # listing was visible there, so its 404 is an error as before.
+                if not named:
+                    raise
                 ctx.log("export-run-not-visible", run=run_id)
             else:
                 seen = True
@@ -388,7 +392,7 @@ def dispatch_export(ctx: Context, ref: str) -> dict[str, Any]:
                     ctx.log("export-finished", run=run_id, conclusion=conclusion)
                     return {"run_id": run_id, "conclusion": conclusion}
         if ctx.monotonic() >= deadline:
-            if run_id is not None and not seen:
+            if named and not seen:
                 raise ArchiveError(
                     f"the dispatched export run {run_id} was never visible in 15 minutes "
                     "(every answer for it was a 404)"

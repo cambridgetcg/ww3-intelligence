@@ -511,6 +511,9 @@ def test_pull_dispatch_gives_up_after_fifteen_minutes(tmp_path):
 
     assert lab_archive.run(ctx, ["pull", "--dispatch"]) == 1
     assert clock.ticks == pytest.approx(15 * 60, abs=lab_archive.DISPATCH_POLL_SECONDS)
+    assert _pull_status(ctx)["problems"][0] == (
+        "dispatch: the dispatched export did not finish within 15 minutes"
+    )
     # It still looked for exports already waiting.
     assert gh.count(ARTIFACTS) == 1
 
@@ -573,6 +576,48 @@ def test_pull_dispatch_reports_a_named_run_that_never_becomes_visible(tmp_path):
     assert gh.count(ARTIFACTS) == 1
 
 
+def test_pull_dispatch_reports_a_named_run_seen_but_unfinished_as_unfinished(tmp_path):
+    # Not visible at first, then visible and still running at the deadline: the
+    # run was seen, so it did not finish; it was not "never visible".
+    gh = FakeGh()
+    clock = Clock()
+    gh.route(EXPORT_DISPATCH, f"https://github.com/{REPO}/actions/runs/{NAMED_RUN}\n".encode())
+    gh.route(NAMED_RUN_GET, lambda: NOT_FOUND if clock.ticks < 20 else {
+        "id": NAMED_RUN, "status": "in_progress"})
+    ctx = make_ctx(tmp_path, gh, clock=clock)
+
+    assert lab_archive.run(ctx, ["pull", "--dispatch"]) == 1
+
+    assert clock.ticks == pytest.approx(15 * 60, abs=lab_archive.DISPATCH_POLL_SECONDS)
+    problem = _pull_status(ctx)["problems"][0]
+    assert problem == (
+        f"dispatch: the dispatched export run {NAMED_RUN} did not finish within 15 minutes"
+    )
+    assert "never visible" not in problem
+    assert gh.count("workflow run") == 1
+
+
+def test_pull_dispatch_without_a_url_stops_at_once_on_a_404_for_the_listed_run(tmp_path):
+    # The listing showed the run, so a 404 for it is an error, as before.
+    gh = FakeGh()
+    clock = Clock()
+    run = {"id": 777, "event": "workflow_dispatch", "status": "queued",
+           "created_at": "2026-11-09T04:20:30Z"}
+    gh.route(EXPORT_DISPATCH, b"")
+    gh.route(EXPORT_LISTING, {"workflow_runs": [run]})
+    gh.route(f"api repos/{REPO}/actions/runs/777", NOT_FOUND)
+    ctx = make_ctx(tmp_path, gh, clock=clock)
+
+    assert lab_archive.run(ctx, ["pull", "--dispatch"]) == 1
+
+    assert clock.ticks == 0
+    assert gh.count(f"api repos/{REPO}/actions/runs/777") == 1
+    assert _pull_status(ctx)["problems"][0] == (
+        f"dispatch: gh api repos/{REPO}/actions/runs/777 failed (1): gh: Not Found (HTTP 404)"
+    )
+    assert "export-run-not-visible" not in ctx.archive.log_path.read_text()
+
+
 @pytest.mark.parametrize("stderr", [
     b"gh: Server Error (HTTP 500)\n",
     b"gh: Bad credentials (HTTP 401)\n",
@@ -602,6 +647,8 @@ def test_pull_dispatch_stops_at_once_on_any_other_error_for_the_named_run(tmp_pa
     (("api", "x"), b"gh: HTTP 404\n", True),
     (("api", "x"), b"gh: Server Error (HTTP 500)\n", False),
     (("api", "x"), b"gh: Not Found (HTTP 4040)\n", False),
+    (("api", "x"), b"gh: Not Found (HTTP 404) retry later\n", False),
+    (("api", "x"), b"warning: gh: HTTP 404\n", False),
     (("api", "x"), b"error connecting to api.github.com\ngh: Not Found (HTTP 404)\n", False),
     (("workflow", "run"), b"gh: Not Found (HTTP 404)\n", False),
 ])
