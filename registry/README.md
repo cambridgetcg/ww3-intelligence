@@ -73,19 +73,41 @@ legitimacy or a measure of power.
 A new kind changes that set, this list and the test that checks they agree.
 
 An alias is a name the actor is known by, matched as written. A state carries
-its English name, its name in its own language, and its official long name
-where reporting uses one and the name takes no side (Afghanistan carries none).
-Most states also carry "<demonym> government", and their names in Russian,
-Ukrainian, Chinese, Japanese, Korean, Arabic, Persian and Hebrew; a form that
-is ambiguous is left out. Other actors carry their English and own-language
-names. A bare demonym or adjective (Russian, Houthi) is never an alias. A short
-form that is also a common word, or that names a wider area, is left out for a
-qualified one: `قناة الجزيرة`, not `الجزيرة`; `دولة قطر`, not `قطر`; and no
-`한국`, which means Korea as a whole. An alias whose lower-case form is an
-ordinary word is case-sensitive (`Le Monde`, `Polska`). The matcher treats a
-straight and a typographic apostrophe as different characters, so a name with
-an apostrophe is seen in both spellings only if it carries both, as the long
-names of China and North Korea do.
+its English name, its name in its own language, and the long name its own
+institutions use, except where rival authorities use different ones
+(Afghanistan carries none). Taiwan's `中華民國` also names the Republic of China
+of 1912 to 1949, so a passage about the earlier state counts for Taiwan. Taiwan
+carries no English "Republic of China", which would read as Taiwan any spelling
+of the PRC's long name that China does not carry. Most states also carry
+"<demonym> government", and their names in Russian, Ukrainian, Chinese,
+Japanese, Korean, Arabic, Persian and Hebrew. "<demonym> government" counts
+for the state whichever authority a passage means by it. That is uneven:
+"Yemeni government" is kept although it can mean the authorities in Sanaa,
+which Ansar Allah runs, while Palestine carries no "Palestinian government",
+which can mean the Palestinian Authority or the authority in Gaza. Other actors
+carry their English and own-language names. A bare demonym or adjective
+(Russian, Houthi) is never an alias.
+
+A short form whose other sense is common, or that names a wider area, is left
+out where the actor carries a qualified form in the same script, even one that
+reporting rarely uses, so some mentions go unseen: `قناة الجزيرة`, not
+`الجزيرة`; `دولة قطر`, not `قطر`; `대한민국`, not `한국` (Korea as a whole) or
+`남한`. Where a short form is the actor's only name in its script, it is kept,
+and it can match other words. Hangul carries only a leading guard and Kana
+none, so `인도`, `카타르` and `대만` also match the start of `인도네시아`,
+`카타르시스` and `대만족`, and `インド` and `シリア` match inside `インドネシア`
+and `シリアル`. `카타르` is also the Korean word for catarrh. `حزب الله`,
+Hezbollah's only Arabic name here, is also a Quranic phrase and part of
+`كتائب حزب الله`. An alias whose lower-case form is an ordinary word is
+case-sensitive (`Le Monde`, `Polska`, `Катар`).
+
+The matcher treats each apostrophe character as a different character, so a
+name with an apostrophe is seen in a spelling only if it carries that
+spelling. The long names of China and North Korea carry U+0027 and U+2019.
+"Republic of Korea", South Korea's alias, lies inside North Korea's long name,
+so North Korea's also carries U+2018, U+02BC and no apostrophe at all; any
+other spelling of it, such as `Peoples'`, still reads as South Korea.
+Azerbaijan's Hebrew name carries both the geresh (U+05F3) and U+0027.
 
 ## Collection roles
 

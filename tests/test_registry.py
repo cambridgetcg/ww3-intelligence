@@ -137,10 +137,10 @@ def test_on_disk_registries_load_under_the_shipped_validator():
     # identity changes them before it changes any visible casefile.
     assert len(actors) == 93
     assert len(sources) == 74
-    assert sum(len(item.aliases) for item in actors) == 532
+    assert sum(len(item.aliases) for item in actors) == 537
     # Only an alias whose characters decompose gains a second spelling, so the
     # searchable surface grows by the 80 that do and by nothing else.
-    assert sum(len(item.alias_forms) for item in actors) == 612
+    assert sum(len(item.alias_forms) for item in actors) == 617
 
 
 def test_registered_rss_sources_replace_dead_endpoints_and_diversify_roles():
@@ -370,12 +370,13 @@ def test_left_out_forms_stay_out_of_the_registry():
         # authority in Gaza.
         "Palestinian government",
         # Korea as a whole; and a prefix of 남한강 and 남한산성 under the
-        # leading guard.
+        # leading guard. South Korea carries 대한민국 instead.
         "한국", "남한",
         # Also "insistent", "diameter", "enthusiasm"; and in Arabic the dual
         # "two students". Each actor carries a qualified form instead.
         "مصر", "قطر", "حماس", "طالبان",
-        # A Quranic phrase, and part of other groups' names.
+        # A Quranic phrase, and part of other groups' names. The movement
+        # carries الحوثيون and جماعة الحوثي instead.
         "أنصار الله",
         # Persian "good fortune"; and also two Iranian provinces.
         "یمن", "آذربایجان",
@@ -383,7 +384,7 @@ def test_left_out_forms_stay_out_of_the_registry():
         assert alias_identity_key(text) not in registered, text
 
 
-def test_a_long_name_with_an_apostrophe_carries_both_apostrophes():
+def test_a_name_with_an_apostrophe_carries_each_spelling_in_use():
     actors = {item.actor_id: item for item in actor_profiles()}
 
     # The matcher reads U+0027 and U+2019 as different characters, and every
@@ -394,6 +395,17 @@ def test_a_long_name_with_an_apostrophe_carries_both_apostrophes():
     ):
         texts = {text for text, _ in actors[actor_id].aliases}
         assert {name.format("'"), name.format("\u2019")} <= texts, actor_id
+
+    # "Republic of Korea", South Korea's alias, lies inside North Korea's long
+    # name, so every spelling of it the North does not carry reads as the
+    # South. It also carries U+2018, U+02BC and no apostrophe at all.
+    north = {text for text, _ in actors["state:north-korea"].aliases}
+    for apostrophe in ("\u2018", "\u02bc", ""):
+        assert f"Democratic People{apostrophe}s Republic of Korea" in north
+    # A Hebrew name with a geresh is written with U+05F3 or with U+0027.
+    azerbaijan = {text for text, _ in actors["state:azerbaijan"].aliases}
+    name = "אזרבייג{}ן"
+    assert {name.format("\u05f3"), name.format("'")} <= azerbaijan
 
 
 def test_registry_rejects_a_native_script_alias_shared_by_two_actors(monkeypatch):

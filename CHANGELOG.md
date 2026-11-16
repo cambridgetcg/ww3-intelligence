@@ -26,33 +26,55 @@
   English-language reporting uses. Here the kind is the identity class of a
   polity with its own government. It is not a position on sovereignty,
   recognition or membership of the United Nations.
-- Aliases follow the existing entries. A state carries its English name, its
-  official long name, "<demonym> government", its name in its own language,
-  and its names in Russian, Ukrainian, Chinese, Japanese, Korean, Arabic,
-  Persian and Hebrew where a form is unambiguous. Palestine carries no
-  "Palestinian government", which could mean the Palestinian Authority or the
-  authority in Gaza. A movement or body carries its English and own-language
-  names. As before, no bare demonym or adjective is an alias, so "Houthi"
-  alone is not; 166 records in the Actions ledger name the movement only that
-  way. A short form that is also a common word, or
-  names a wider area, is left out for a qualified form, as Al Jazeera already
-  carries `قناة الجزيرة` and not the bare `الجزيرة`: Arabic `مصر` (also
-  "insistent"), `قطر` ("diameter") and `حماس` ("enthusiasm"); `طالبان`, which
-  in Arabic is also "two students"; Persian `یمن` ("good fortune") and
-  `آذربایجان` (also two Iranian provinces); Korean `한국` (Korea as a whole)
-  and `남한`. Russian `Катар` and Polish `Polska` match only capitalised,
-  because in lower case they are "catarrh" and the adjective "Polish".
+- Aliases follow the existing entries. A state carries its English name, the
+  long name its own institutions use, "<demonym> government", its name in its
+  own language, and its names in Russian, Ukrainian, Chinese, Japanese,
+  Korean, Arabic, Persian and Hebrew. A movement or body carries its English
+  and own-language names. As before, no bare demonym or adjective is an alias,
+  so "Houthi" alone is not: 259 records in the Actions ledger hold the word,
+  and 164 of them name the movement in no other way (35 of 64 in the Fly-era
+  ledger).
+- "<demonym> government" counts for the state whichever authority a passage
+  means by it. That is uneven: "Yemeni government" (31 records) is kept
+  although it can mean the authorities in Sanaa, which Ansar Allah runs, while
+  Palestine carries no "Palestinian government", which can mean the
+  Palestinian Authority or the authority in Gaza.
+- A short form whose other sense is common, or that names a wider area, is
+  left out where the actor carries a qualified form in the same script, as Al
+  Jazeera already carries `قناة الجزيرة` and not the bare `الجزيرة`: Arabic
+  `مصر` (also "insistent"), `قطر` ("diameter") and `حماس` ("enthusiasm");
+  `طالبان`, which in Arabic is also "two students"; `أنصار الله`, a Quranic
+  phrase; Persian `یمن` ("good fortune") and `آذربایجان` (also two Iranian
+  provinces); Korean `한국` (Korea as a whole) and `남한`, which begins
+  `남한강` and `남한산성`. The qualified forms are rarer in reporting, so some
+  mentions go unseen. Where a short form is the actor's only name in its
+  script, it is kept, and it can match other words, as `인도` and `インド`
+  already match in `인도네시아` and `インドネシア`: Korean `카타르` (also
+  "catarrh") and `대만` match the start of `카타르시스` and `대만족`, Japanese
+  `シリア` matches inside `シリアル`, and Arabic `حزب الله` is also a Quranic
+  phrase and part of `كتائب حزب الله`. Russian `Катар` and Polish `Polska`
+  match only capitalised, because in lower case they are "catarrh" and the
+  adjective "Polish".
 - Afghanistan carries no long name: "Islamic Republic" and "Islamic Emirate"
   each take a side on who governs it. "Islamic Emirate of Afghanistan", the
-  Taliban's name for its own government, is an alias of the Taliban.
+  Taliban's name for its own government, is an alias of the Taliban. Taiwan's
+  `中華民國` also names the Republic of China of 1912 to 1949, so a passage
+  about the earlier state counts for Taiwan.
 - The long names of China and North Korea gain a twin with the typographic
   apostrophe (`People’s`). Every occurrence of either in the Actions ledger
   uses it (90 and 6), so the straight form never matched: China's long name
-  was seen only as "China" inside it, and North Korea's not at all. Without
-  the twin, the new alias "Republic of Korea", the name the UN and the IAEA
-  use for the South, would have read the North's long name as the South (6
-  spans in 5 records). Taiwan does not carry "Republic of China", which would
-  read any other spelling of the PRC's long name as Taiwan.
+  was seen only as "China" inside it, and North Korea's not at all. The new
+  alias "Republic of Korea", the name the UN and the IAEA use for the South,
+  lies inside the North's long name, so any spelling of that name the North
+  does not carry reads as the South. Without the twin it would have done so
+  in 6 spans in 5 records. North Korea's long name also carries U+2018, the
+  modifier letter apostrophe U+02BC, and no apostrophe at all. Any other
+  spelling, such as `Peoples'`, still reads as the South; neither ledger holds
+  one. For the same reason Taiwan does not carry "Republic of China", which
+  would read as Taiwan any spelling of the PRC's long name that China does not
+  carry.
+- Azerbaijan's Hebrew name is written with a geresh. It is carried twice, with
+  the geresh (U+05F3) and with U+0027, the two characters text uses for it.
 - Measured with the casefile's own passage builder and scanner on copies of
   both ledgers:
   - Actions ledger, 19,627 records: 1,959 now name a different set of actors.
@@ -64,9 +86,22 @@
   - Fly-era ledger, 12,226 records: 1,295 change, and 1,293 gain a new actor,
     with 1,973 spans. North Korea gains 2 records and China 30 longer spans.
     No span moves.
-- Two other groups' names contain one registered here: Kataib Hezbollah, a
-  separate Iraqi group (2 records), and the Pakistani Taliban (3). Each counts
-  as a visible occurrence of the shorter name, as any mention does.
+- Neither ledger holds a record whose visible text is Cyrillic, Armenian,
+  Hebrew, Arabic, Han, Kana or Hangul, so no native-script form added here has
+  been tried on collected text, and "no span moves" holds for the scripts the
+  ledgers hold. In Chinese text, `白俄罗斯` and `白俄羅斯` now count for
+  Belarus and no longer for Russia, whose unguarded `俄罗斯` and `俄羅斯`
+  matched inside them. No other added spelling holds the alias of an actor
+  registered before this release.
+- Other groups' names contain one registered here, and each counts as a
+  visible occurrence of the shorter name, as any mention does. The commonest
+  is Palestine Action, a British group: in the Actions ledger it is 31 spans
+  in 23 records, and in 21 of the 131 records that name Palestine it is the
+  only way they do; in the Fly-era ledger it is 10 spans in 6 records, each
+  naming Palestine no other way. Kataib Hezbollah, a separate Iraqi group, is
+  in 2 Actions records and the Pakistani Taliban in 3. In the Fly-era ledger,
+  2 records name Islamic State by a long name that begins "Islamic State in
+  Iraq", which counts for Iraq.
 - Not changed: a Turkish or German name of a state that differs from the
   English is not an alias, apart from each country's own name (`Türkiye`,
   `Deutschland`), so the two non-English feeds collected show fewer mentions
@@ -75,6 +110,17 @@
   ministry's 222 records, and German names to 13 of the Federal Foreign
   Office's 20. Turkish `İran` already matches "Iran", because a
   case-insensitive match reads `İ` as `i`.
+- Not changed: other names the Actions ledger holds often wait for a
+  decision, counted as above. "Sudan" is in 484 records and "South Sudan",
+  which holds it, in 340 of them (310 GDACS alerts), so the two would be
+  registered together, with the Rapid Support Forces, whose short name RSF is
+  also that of Reporters Without Borders. The IRGC (50, with "Revolutionary
+  Guards") is a branch of a state's armed forces, which no kind describes.
+  Islamic State (25, with ISIS, ISIL and Daesh) has long names that hold Iraq
+  and Syria. "Jordan" (57) is also a given name and a river, and "Congo" names
+  two states (DR Congo 147, with Rwanda 50). The United Arab Emirates (66) and
+  Estonia, Latvia and Lithuania (13 to 17 each) raise no such question and are
+  left for the next batch.
 
 **Upgrading:** the casefile fingerprint binds the bytes of both registries,
 so an assessment written against a casefile built before this release fails
